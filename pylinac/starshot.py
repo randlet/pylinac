@@ -178,7 +178,7 @@ class Starshot:
         return center_point
 
     @value_accept(radius=(0.2, 0.95), min_peak_height=(0.05, 0.95))
-    def analyze(self, radius: float=0.85, min_peak_height: float=0.25, tolerance: float=1.0,
+    def analyze(self, radius: float=0.85, min_peak_height: float=0.25, min_peak_distance: Union[float, int]=0.02, tolerance: float=1.0,
                 start_point: Point=None, fwhm: bool=True, recursive: bool=True):
         """Analyze the starshot image.
 
@@ -194,6 +194,10 @@ class Starshot:
             The percentage minimum height a peak must be to be considered a valid peak. A lower value catches
             radiation peaks that vary in magnitude (e.g. different MU delivered or gantry shot), but could also pick up noise.
             If necessary, lower value for gantry shots and increase for noisy images.
+        min_peak_distance: float, optional
+            If passed an int, parameter is the number of elements apart a peak must be from neighboring peaks.
+            If passed a float, must be between 0 and 1 and represents the ratio of the profile to exclude.
+            E.g. if passed 0.05 with a 1000-element profile, the minimum peak width will be 0.05*1000 = 50 elements.
         tolerance : int, float, optional
             The tolerance in mm to test against for a pass/fail result.
         start_point : 2-element iterable, optional
@@ -225,9 +229,9 @@ class Starshot:
         if start_point is None:
             start_point = self._get_reasonable_start_point()
 
-        self._get_reasonable_wobble(start_point, fwhm, min_peak_height, radius, recursive)
+        self._get_reasonable_wobble(start_point, fwhm, min_peak_height, min_peak_distance, radius, recursive)
 
-    def _get_reasonable_wobble(self, start_point, fwhm, min_peak_height, radius, recursive):
+    def _get_reasonable_wobble(self, start_point, fwhm, min_peak_height, min_peak_distance, radius, recursive):
         """Determine a wobble that is "reasonable". If recursive is false, the first iteration will be passed,
         otherwise the parameters will be tweaked to search for a reasonable wobble."""
         wobble_unreasonable = True
@@ -236,7 +240,7 @@ class Starshot:
         radius_gen = get_radius()
         while wobble_unreasonable:
             try:
-                self.circle_profile = StarProfile(self.image, focus_point, radius, min_peak_height, fwhm)
+                self.circle_profile = StarProfile(self.image, focus_point, radius, min_peak_height, min_peak_distance, fwhm)
                 if (len(self.circle_profile.peaks) < 6) or (len(self.circle_profile.peaks) % 2 != 0):
                     raise ValueError
                 self.lines = LineManager(self.circle_profile.peaks)
@@ -534,10 +538,10 @@ class LineManager:
 
 class StarProfile(CollapsedCircleProfile):
     """Class that holds and analyzes the circular profile which finds the radiation lines."""
-    def __init__(self, image, start_point, radius, min_peak_height, fwhm):
+    def __init__(self, image, start_point, radius, min_peak_height, min_peak_distance, fwhm):
         radius = self._convert_radius_perc2pix(image, start_point, radius)
         super().__init__(center=start_point, radius=radius, image_array=image.array, width_ratio=0.1)
-        self.get_peaks(min_peak_height, fwhm=fwhm)
+        self.get_peaks(min_peak_height, min_peak_distance=min_peak_distance, fwhm=fwhm)
 
     @staticmethod
     def _convert_radius_perc2pix(image, start_point, radius):
