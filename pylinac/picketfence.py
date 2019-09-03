@@ -46,7 +46,7 @@ class PFDicomImage(image.LinacDicomImage):
     def __init__(self, path: str, **kwargs):
         super().__init__(path, **kwargs)
         self._check_for_noise()
-        self.check_inversion(position=(0.2, 0.05))
+        self.check_inversion_by_histogram()
 
     def _check_for_noise(self):
         """Check if the image has extreme noise (dead pixel, etc) by comparing
@@ -279,6 +279,13 @@ class PicketFence:
         if action_tolerance is not None and tolerance < action_tolerance:
             raise ValueError("Tolerance cannot be lower than the action tolerance")
 
+        # crop the images so that Elekta images don't fail. See #168
+        if not self._is_analyzed:
+            self.image.crop(pixels=2)
+
+        if invert:
+            self.image.invert()
+
         """Pre-analysis"""
         self._orientation = orientation
         self.settings = Settings(self.orientation, tolerance, action_tolerance, hdmlc, self.image, self._log_fits)
@@ -286,8 +293,6 @@ class PicketFence:
         if sag_adjustment != 0:
             sag_pixels = int(round(sag_adjustment * self.settings.dpmm))
             self.image.adjust_for_sag(sag_pixels, self.orientation)
-        if invert:
-            self.image.invert()
 
         """Analysis"""
         self.pickets = PicketManager(self.image, self.settings, num_pickets)
@@ -390,22 +395,20 @@ class PicketFence:
         self.plot_analyzed_image(guard_rails, mlc_peaks, overlay, leaf_error_subplot=leaf_error_subplot, show=False)
         plt.savefig(filename, **kwargs)
         if isinstance(filename, str):
-            print("Picket fence image saved to: {0}".format(osp.abspath(filename)))
+            print(f"Picket fence image saved to: {osp.abspath(filename)}")
 
     def results(self) -> str:
         """Return results of analysis. Use with print()."""
         pass_pct = self.percent_passing
         offsets = ' '.join('{:.1f}'.format(pk.dist2cax) for pk in self.pickets)
-        string = "Picket Fence Results: \n{:2.1f}% " \
-                 "Passed\nMedian Error: {:2.3f}mm \n" \
-                 "Mean picket spacing: {:2.1f}mm \n" \
-                 "Picket offsets from CAX (mm): {}\n" \
-                 "Max Error: {:2.3f}mm on Picket: {}, Leaf: {}".format(pass_pct, self.abs_median_error,
-                                                                       self.pickets.mean_spacing, offsets,
-                                                                       self.max_error, self.max_error_picket, self.max_error_leaf)
+        string = f"Picket Fence Results: \n{pass_pct:2.1f}% " \
+                 f"Passed\nMedian Error: {self.abs_median_error:2.3f}mm \n" \
+                 f"Mean picket spacing: {self.pickets.mean_spacing:2.1f}mm \n" \
+                 f"Picket offsets from CAX (mm): {offsets}\n" \
+                 f"Max Error: {self.max_error:2.3f}mm on Picket: {self.max_error_picket}, Leaf: {self.max_error_leaf}"
         return string
 
-    def publish_pdf(self, filename: str=None, notes: str=None, open_file: bool=False, metadata: dict=None):
+    def publish_pdf(self, filename: str, notes: str=None, open_file: bool=False, metadata: dict=None):
         """Publish (print) a PDF containing the analysis, images, and quantitative results.
 
         Parameters
@@ -426,23 +429,21 @@ class PicketFence:
             --------------
         """
         plt.ioff()
-        if filename is None:
-            filename = self.image.pdf_path
         canvas = pdf.PylinacCanvas(filename, page_title="Picket Fence Analysis", metadata=metadata)
         data = io.BytesIO()
         self.save_analyzed_image(data, leaf_error_subplot=True)
         canvas.add_image(data, location=(3, 8), dimensions=(12, 12))
         text = [
             'Picket Fence results:',
-            'Magnification factor (SID/SAD): {:2.2f}'.format(self.image.metadata.RTImageSID/self.image.metadata.RadiationMachineSAD),
-            'Tolerance (mm): {}'.format(self.settings.tolerance),
-            'Leaves passing (%): {:2.1f}'.format(self.percent_passing),
-            'Absolute median error (mm): {:2.3f}'.format(self.abs_median_error),
-            'Mean picket spacing (mm): {:2.1f}'.format(self.pickets.mean_spacing),
-            'Maximum error (mm): {:2.3f} on Picket {}, Leaf {}'.format(self.max_error, self.max_error_picket, self.max_error_leaf),
+            f'Magnification factor (SID/SAD): {self.image.metadata.RTImageSID/self.image.metadata.RadiationMachineSAD:2.2f}',
+            f'Tolerance (mm): {self.settings.tolerance}',
+            f'Leaves passing (%): {self.percent_passing:2.1f}',
+            f'Absolute median error (mm): {self.abs_median_error:2.3f}',
+            f'Mean picket spacing (mm): {self.pickets.mean_spacing:2.1f}',
+            f'Maximum error (mm): {self.max_error:2.3f} on Picket {self.max_error_picket}, Leaf {self.max_error_leaf}',
         ]
-        text.append('Gantry Angle: {:2.2f}'.format(self.image.gantry_angle))
-        text.append('Collimator Angle: {:2.2f}'.format(self.image.collimator_angle))
+        text.append(f'Gantry Angle: {self.image.gantry_angle:2.2f}')
+        text.append(f'Collimator Angle: {self.image.collimator_angle:2.2f}')
         canvas.add_text(text=text, location=(10, 25.5))
         if notes is not None:
             canvas.add_text(text="Notes:", location=(1, 5.5), font_size=14)
@@ -661,7 +662,8 @@ class PicketManager:
     @property
     def mean_spacing(self) -> np.ndarray:
         """The average distance between pickets in mm."""
-        return np.mean([self.pickets[idx].dist2cax - self.pickets[idx+1].dist2cax for idx in range(len(self)-1)])
+        sorted_pickets = sorted(self.pickets, key=lambda x: x.dist2cax)
+        return np.mean([abs(sorted_pickets[idx].dist2cax - sorted_pickets[idx+1].dist2cax) for idx in range(len(sorted_pickets)-1)])
 
 
 class Picket:
@@ -726,9 +728,23 @@ class Picket:
     def picket_array(self) -> np.ndarray:
         """A slice of the whole image that contains the area around the picket."""
         if self.settings.orientation == UP_DOWN:
-            array = self.image[:, int(self.approximate_idx - self.spacing):int(self.approximate_idx + self.spacing)]
+            left_edge = int(self.approximate_idx - self.spacing)
+            right_edge = int(self.approximate_idx + self.spacing)
+            # see #167 & #174
+            if left_edge < 0:
+                self.spacing += left_edge
+                left_edge = int(self.approximate_idx - self.spacing)
+                right_edge = int(self.approximate_idx + self.spacing)
+            array = self.image[:, left_edge:right_edge]
         else:
-            array = self.image[int(self.approximate_idx - self.spacing):int(self.approximate_idx + self.spacing), :]
+            top_edge = int(self.approximate_idx - self.spacing)
+            bottom_edge = int(self.approximate_idx + self.spacing)
+            # see #167 & #174
+            if top_edge < 0:
+                self.spacing += top_edge
+                top_edge = int(self.approximate_idx - self.spacing)
+                bottom_edge = int(self.approximate_idx + self.spacing)
+            array = self.image[top_edge:bottom_edge, :]
         return array
 
     @property

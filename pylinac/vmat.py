@@ -6,9 +6,8 @@ and Dose-Rate & MLC speed (DRMLC) tests.
 Features:
 
 * **Do both tests** - Pylinac can handle either DRGS or DRMLC tests.
-* **Adjust for offsets** - Older VMAT patterns were off-center. Easily account for the offset by passing it in.
-* **Automatic identification using file names** - If your file names are clear, the image type and test type don't even
-  have to be specified; just load and analyze.
+* **Automatic offset correction** - Older VMAT tests had the ROIs offset, newer ones are centered. No worries, pylinac finds the ROIs automatically.
+* **Automatic open/DMLC identification** - Pass in both images--don't worry about naming. Pylinac will automatically identify the right images.
 """
 from io import BytesIO
 from typing import Union, List, Tuple, Sequence
@@ -330,11 +329,11 @@ class VMATBase:
         canvas.add_text(text='DMLC Image', location=(14, 22), font_size=18)
         canvas.add_text(text=f'{self.dmlc_image.base_path}', location=(14, 21.5))
         canvas.add_text(text='Median profiles', location=(8, 12), font_size=18)
-        text = ['{} VMAT results:'.format(self._result_header),
-                'Source-to-Image Distance (mm): {:2.0f}'.format(self.open_image.sid),
-                'Tolerance (%): {:2.1f}'.format(self._tolerance),
-                'Absolute mean deviation (%): {:2.2f}'.format(self.avg_abs_r_deviation),
-                'Maximum deviation (%): {:2.2f}'.format(self.max_r_deviation),
+        text = [f'{self._result_header} VMAT results:',
+                f'Source-to-Image Distance (mm): {self.open_image.sid:2.0f}',
+                f'Tolerance (%): {self._tolerance*100:2.1f}',
+                f'Absolute mean deviation (%): {self.avg_abs_r_deviation:2.2f}',
+                f'Maximum deviation (%): {self.max_r_deviation:2.2f}',
                 ]
         canvas.add_text(text=text, location=(10, 25.5))
         if notes is not None:

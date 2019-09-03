@@ -31,17 +31,17 @@ import multiprocessing
 import os
 import os.path as osp
 import shutil
+from typing import Union
 
 import matplotlib.pyplot as plt
 import numpy as np
-from reportlab.lib.units import cm
 
 from .settings import get_array_cmap
 from .core import image
 from .core import io
 from .core.decorators import type_accept, value_accept
 from .core import pdf
-from .core.utilities import is_iterable, decode_binary, Structure
+from .core.utilities import is_iterable, decode_binary, Structure, open_path
 
 STATIC_IMRT = 'Static IMRT'
 DYNAMIC_IMRT = 'Dynamic IMRT'
@@ -133,10 +133,10 @@ class MachineLogs(list):
             return
 
         # actual log loading
-        print("{} logs found.".format(len(log_files)))
+        print(f"{len(log_files)} logs found.")
         for idx, file in enumerate(log_files):
             self.append(file)
-            print("Log loaded: {} of {}".format(idx+1, len(log_files)), end='\r')
+            print(f"Log loaded: {idx+1} of {len(log_files)}", end='\r')
         print('')
 
     def _check_empty(self):
@@ -151,9 +151,9 @@ class MachineLogs(list):
         - Average gamma value of all logs
         - Average gamma pass percent of all logs
         """
-        print("Number of logs: {}".format(len(self)))
-        print("Average gamma: {:3.2f}".format(self.avg_gamma()))
-        print("Average gamma pass percent: {:3.1f}".format(self.avg_gamma_pct()))
+        print(f"Number of logs: {len(self)}")
+        print(f"Average gamma: {self.avg_gamma():3.2f}")
+        print(f"Average gamma pass percent: {self.avg_gamma_pct():3.1f}")
 
     def append(self, obj, recursive=True):
         """Append a log. Overloads list method.
@@ -189,7 +189,7 @@ class MachineLogs(list):
         for num, log in enumerate(self):
             log.fluence.gamma.calc_map(doseTA, distTA, threshold, resolution)
             gamma_list[num] = log.fluence.gamma.avg_gamma
-            print('Calculating gammas: {} of {}'.format(num+1, self.num_logs), end='\r')
+            print(f'Calculating gammas: {num+1} of {self.num_logs}', end='\r')
         print('')
         return gamma_list.mean()
 
@@ -202,7 +202,7 @@ class MachineLogs(list):
         for num, log in enumerate(self):
             log.fluence.gamma.calc_map(doseTA, distTA, threshold, resolution)
             gamma_list[num] = log.fluence.gamma.pass_prcnt
-            print("Calculating gamma pass percent: {} of {}".format(num+1, self.num_logs), end='\r')
+            print(f"Calculating gamma pass percent: {num+1} of {self.num_logs}", end='\r')
         print('')
         return gamma_list.mean()
 
@@ -410,10 +410,13 @@ class FluenceBase:
         self._mu = mu_axis
         self._jaws = jaw_struct
 
-    @property
-    def map_calced(self):
+    def is_map_calced(self, raise_error=False):
         """Return a boolean specifying whether the fluence has been calculated."""
-        return hasattr(self.array, 'size')
+        calced = hasattr(self.array, 'size')
+        if (not calced) and (raise_error is True):
+            raise ValueError("Map has not yet been calculated. Use .calc_map() with desired parameters first.")
+        else:
+            return calced
 
     @lru_cache(maxsize=1)
     def calc_map(self, resolution=0.1, equal_aspect=False):
@@ -450,42 +453,38 @@ class FluenceBase:
         if len(self._mlc.snapshot_idx) < 1:
             return fluence
 
-        if self._mlc.hdmlc:
-            num_sm = 32
-            sm_sz = 2.5 / resolution
-            num_lg = 14
-            lg_sz = 5 / resolution
-        else:
-            num_sm = 40
-            sm_sz = 5 / resolution
-            num_lg = 10
-            lg_sz = 10 / resolution
+        def create_mlc_y_positions(is_hdmlc):
+            if not is_hdmlc:
+                num_large_leaves = 10
+                size_large_leaves = 10 / resolution
+                num_small_leaves = 40
+                size_small_leaves = 5 / resolution
+            else:
+                num_large_leaves = 14
+                size_large_leaves = 5 / resolution
+                num_small_leaves = 32
+                size_small_leaves = 2.5 / resolution
+            sizes = [size_large_leaves]*num_large_leaves + [size_small_leaves]*num_small_leaves + [size_large_leaves]*num_large_leaves
+            return np.cumsum([0,] + sizes).astype(int)
 
-        lg = np.repeat(lg_sz, num_lg)
-        sm = np.repeat(sm_sz, num_sm)
-        leaves = np.concatenate((lg, sm, lg))
-        cl = np.cumsum(leaves)
-        cl2 = np.insert(cl, 0, 0)
+        positions = create_mlc_y_positions(is_hdmlc=self._mlc.hdmlc)
 
         def yield_leaf_width():
-            for idx in range(60):
-                yield (int(cl2[idx]), int(cl[idx]))
+            for idx in range(self._mlc.num_pairs):
+                yield (positions[idx], positions[idx+1])
 
         # calculate the MU delivered in each snapshot. For Tlogs this is absolute; for dynalogs it's normalized.
         mu_matrix = getattr(self._mu, self.FLUENCE_TYPE)
         # if little to no MU was delivered (e.g. MV/kV setup), return
         if np.max(mu_matrix) < 0.5:
             return fluence
-        MU_differential = np.zeros(len(mu_matrix))
-        MU_differential[0] = mu_matrix[0]
-        MU_differential[1:] = np.diff(mu_matrix)
-        MU_differential = MU_differential / mu_matrix[-1]
-        MU_cumulative = 1
+        MU_differential = np.array([mu_matrix[0]] + list(np.diff(mu_matrix)))
+        MU_total = mu_matrix[-1]
 
         # calculate each "line" of fluence (the fluence of an MLC leaf pair, e.g. 1 & 61, 2 & 62, etc),
         # and add each "line" to the total fluence matrix
-        fluence_line = np.zeros(int(400 / resolution), dtype=np.float32)
         leaf_offset = self._mlc.num_pairs
+        fluence_line = np.zeros(int(400 / resolution), dtype=np.float32)
         pos_offset = int(np.round(200 / resolution))
         for pair, width in zip(range(1, self._mlc.num_pairs + 1), yield_leaf_width()):
             if not self._mlc.leaf_under_y_jaw(pair):
@@ -513,21 +512,21 @@ class FluenceBase:
                     rt_jaw_pos = right_jaw_data.max()
                     left_edge = max(lt_mlc_pos, lt_jaw_pos)
                     right_edge = min(rt_mlc_pos, rt_jaw_pos)
-                    fluence_line[int(left_edge):int(right_edge)] = MU_cumulative
+                    fluence_line[int(left_edge):int(right_edge)] = MU_total
                 if equal_aspect:
                     fluence[width[0]:width[1], :] = np.tile(fluence_line, [width[1] - width[0], 1])
                 else:
                     fluence[pair - 1, :] = fluence_line
 
-        # extend to the max MU; for dynalogs this is 1 since it's relative. For Tlogs, it's the absolute MU.
-        fluence *= np.max(mu_matrix)
+        # if it's a dynalog, then normalize it because 25000 is such an arbitrary value
+        if MU_total == 25000:
+            fluence /= MU_total
 
         return fluence
 
     def plot_map(self, show=True):
         """Plot the fluence; the fluence (pixel map) must have been calculated first."""
-        if not self.map_calced:
-            raise AttributeError("Map not yet calculated; use calc_map()")
+        self.is_map_calced(raise_error=True)
         plt.clf()
         plt.imshow(self.array, aspect='auto', cmap=get_array_cmap())
         if show:
@@ -587,6 +586,7 @@ class GammaFluence(FluenceBase):
         mlc_struct : MLC_Struct
             The MLC structure, so fluence can be calculated from leaf positions.
         """
+        self.array = object
         self.passfail_array = object
         self._actual_fluence = actual_fluence
         self._expected_fluence = expected_fluence
@@ -620,9 +620,9 @@ class GammaFluence(FluenceBase):
             A num_mlc_leaves-x-400/resolution numpy array.
         """
         # calc fluences if need be
-        if not self._actual_fluence.map_calced or resolution != self._actual_fluence.resolution:
+        if not self._actual_fluence.is_map_calced() or resolution != self._actual_fluence.resolution:
             self._actual_fluence.calc_map(resolution)
-        if not self._expected_fluence.map_calced or resolution != self._expected_fluence.resolution:
+        if not self._expected_fluence.is_map_calced() or resolution != self._expected_fluence.resolution:
             self._expected_fluence.calc_map(resolution)
 
         actual_img = image.load(self._actual_fluence.array, dpi=25.4 / resolution)
@@ -649,8 +649,7 @@ class GammaFluence(FluenceBase):
 
     def plot_map(self, show=True):
         """Plot the fluence; the fluence (pixel map) must have been calculated first."""
-        if not self.map_calced:
-            raise AttributeError("Map not yet calculated; use calc_map()")
+        self.is_map_calced(raise_error=True)
         plt.imshow(self.array, aspect='auto', vmax=1, cmap=get_array_cmap())
         plt.colorbar()
         plt.show()
@@ -670,13 +669,11 @@ class GammaFluence(FluenceBase):
         bin_edges : numpy.ndarray
             A 1D array of the bin edges. If left as None, the class default will be used (self.bins).
         """
-        if self.map_calced:
-            if bins is None:
-                bins = self.bins
-            hist_arr, bin_edges = np.histogram(self.array, bins=bins)
-            return hist_arr, bin_edges
-        else:
-            raise AttributeError("Gamma map not yet calculated")
+        self.is_map_calced(raise_error=True)
+        if bins is None:
+            bins = self.bins
+        hist_arr, bin_edges = np.histogram(self.array, bins=bins)
+        return hist_arr, bin_edges
 
     def plot_histogram(self, scale='log', bins=None, show=True):
         """Plot a histogram of the gamma map values.
@@ -688,16 +685,14 @@ class GammaFluence(FluenceBase):
         bins : sequence
             The bin edges for the gamma histogram; see numpy.histogram for more info.
         """
-        if self.map_calced:
-            if bins is None:
-                bins = self.bins
-            plt.clf()
-            plt.hist(self.array.flatten(), bins=bins)
-            plt.yscale(scale)
-            if show:
-                plt.show()
-        else:
-            raise AttributeError("Map not yet calculated; use calc_map()")
+        self.is_map_calced(raise_error=True)
+        if bins is None:
+            bins = self.bins
+        plt.clf()
+        plt.hist(self.array.flatten(), bins=bins)
+        plt.yscale(scale)
+        if show:
+            plt.show()
 
     def save_histogram(self, filename, scale='log', bins=None, **kwargs):
         """Save the histogram plot to file."""
@@ -706,11 +701,9 @@ class GammaFluence(FluenceBase):
 
     def plot_passfail_map(self):
         """Plot the binary gamma map, only showing whether pixels passed or failed."""
-        if self.map_calced:
-            plt.imshow(self.passfail_array, cmap=get_array_cmap())
-            plt.show()
-        else:
-            raise AttributeError("Map not yet calculated; use calc_map()")
+        self.is_map_calced(raise_error=True)
+        plt.imshow(self.passfail_array, cmap=get_array_cmap())
+        plt.show()
 
 
 class FluenceStruct:
@@ -775,7 +768,7 @@ class MLC:
         # Add bank B MLC positions to mlc snapshot arrays
         for leaf in range(1, (dlog.header.num_mlc_leaves // 2) + 1):
             axis = LeafAxis(expected=snapshot_data[(leaf - 1) * 4 + 14], actual=snapshot_data[(leaf - 1) * 4 + 15])
-            mlc.add_leaf_axis(axis, leaf + dlog.header.num_mlc_leaves // 2)
+            mlc.add_leaf_axis(axis, leaf_num=leaf+dlog.header.num_mlc_leaves // 2)
 
         # scale dynalog leaf positions from the physical plane to the isocenter plane and from 100ths of mm to cm.
         dynalog_leaf_conversion = 1.96614  # MLC physical plane scaling factor to iso (100cm SAD) plane
@@ -822,7 +815,7 @@ class MLC:
     @lru_cache(maxsize=1)
     def moving_leaves(self):
         """Return an array of the leaves that moved during treatment."""
-        threshold = 0.003
+        threshold = 0.01
         indices = ()
         for leaf_num, leafdata in self.leaf_axes.items():
             if type(self) == TrajectoryLog:
@@ -1304,31 +1297,40 @@ class SubbeamManager:
     def post_hoc_metadata(self, axis_data):
         """From the Axis Data, perform post-hoc analysis and set metadata to the subbeams.
             Gives the subbeams more information, as not much is given directly in the logs."""
-        for idx, beam in enumerate(self.subbeams):
-            self._set_beamon_snapshots(axis_data, idx)
+        for subbeam_num, subbeam in enumerate(self.subbeams):
+            self._set_subbeam_snapshots(axis_data, subbeam_num)
             mlc_subsection = copy.copy(axis_data.mlc)
-            mlc_subsection._snapshot_idx = [idx for idx, i in enumerate(beam._snapshots) if i]
-            beam.fluence = FluenceStruct(mlc_subsection, axis_data.mu, axis_data.jaws)
+            mlc_subsection.snapshot_idx = subbeam._snapshots
+            subbeam.fluence = FluenceStruct(mlc_subsection, axis_data.mu, axis_data.jaws)
         gc.collect()  # don't know why gc is needed; maybe something to do w/ copy?
 
-    def _set_beamon_snapshots(self, axis_data, beam_num):
+    def _set_subbeam_snapshots(self, axis_data, beam_num):
         """Get the snapshot indices 1) where the beam was on and 2) between the subbeam control point values."""
-        beam = self.subbeams[beam_num]
-        all_snapshots = axis_data.control_point.actual
-        lower_bound = beam.control_point
-        try:
-            upper_bound = self.subbeams[beam_num+1].control_point
-        except IndexError:
-            upper_bound = axis_data.control_point.actual.max()
-        section_snapshots = np.logical_and(all_snapshots>=lower_bound, all_snapshots<upper_bound)
-        beam_on_snapshots = axis_data.beam_hold.actual == 0
-        combined_snapshot = np.logical_and(beam_on_snapshots, section_snapshots)
+        subbeam = self.subbeams[beam_num]
+        cp_by_snapshot = axis_data.control_point.actual
 
-        beam._snapshots = combined_snapshot
-        beam._axis_data = axis_data
+        # find upper and lower bounds of the subbeam control points
+        cp_lower_bound = subbeam.control_point
+        try:
+            cp_upper_bound = self.subbeams[beam_num+1].control_point
+        except IndexError:
+            cp_upper_bound = cp_by_snapshot[-1]
+
+        # extract the snapshots within those control points and drop the beam holds as booleans
+        snapshots_within_subbeam = np.logical_and(cp_by_snapshot>=cp_lower_bound, cp_by_snapshot<cp_upper_bound)
+        beam_on_snapshots = axis_data.beam_hold.actual == 0
+        combined_snaps_as_bool = np.logical_and(beam_on_snapshots, snapshots_within_subbeam)
+        # convert boolean array back to snapshot indices
+        combined_snapshots = [snapshot_idx for (snapshot_idx, boolean_snapshot) in enumerate(combined_snaps_as_bool) if boolean_snapshot]
+
+        subbeam._snapshots = combined_snapshots
+        subbeam._axis_data = axis_data
 
     def __getitem__(self, item):
         return self.subbeams[item]
+
+    def __len__(self):
+        return len(self.subbeams)
 
 
 class LogBase:
@@ -1340,7 +1342,7 @@ class LogBase:
             self.filename = filename
             self.exclude_beam_off = exclude_beam_off
         else:
-            raise IOError("{} was not a valid log file".format(filename))
+            raise IOError(f"{filename} was not a valid log file")
 
     @classmethod
     def from_url(cls, url, exclude_beam_off=True):
@@ -1352,35 +1354,34 @@ class LogBase:
         """Plot actual & expected fluence, gamma map, gamma histogram,
             MLC error histogram, and MLC RMS histogram.
         """
-        if self.fluence.gamma.map_calced:
-            # plot the actual fluence
-            ax = plt.subplot(2, 3, 1)
-            self.plot_subimage('actual', ax, show=False)
+        self.fluence.gamma.is_map_calced(raise_error=True)
 
-            # plot the expected fluence
-            ax = plt.subplot(2, 3, 2)
-            self.plot_subimage('expected', ax, show=False)
+        # plot the actual fluence
+        ax = plt.subplot(2, 3, 1)
+        self.plot_subimage('actual', ax, show=False)
 
-            # plot the gamma map
-            ax = plt.subplot(2, 3, 3)
-            self.plot_subimage('gamma', ax, show=False)
+        # plot the expected fluence
+        ax = plt.subplot(2, 3, 2)
+        self.plot_subimage('expected', ax, show=False)
 
-            # plot the gamma histogram
-            ax = plt.subplot(2, 3, 4)
-            self.plot_subgraph('gamma', ax, show=False)
+        # plot the gamma map
+        ax = plt.subplot(2, 3, 3)
+        self.plot_subimage('gamma', ax, show=False)
 
-            # plot the MLC error histogram
-            ax = plt.subplot(2, 3, 5)
-            self.plot_subgraph('leaf hist', ax, show=False)
+        # plot the gamma histogram
+        ax = plt.subplot(2, 3, 4)
+        self.plot_subgraph('gamma', ax, show=False)
 
-            # plot the leaf RMSs
-            ax = plt.subplot(2,3,6)
-            self.plot_subgraph('rms', ax, show=False)
+        # plot the MLC error histogram
+        ax = plt.subplot(2, 3, 5)
+        self.plot_subgraph('leaf hist', ax, show=False)
 
-            if show:
-                plt.show()
-        else:
-            raise AttributeError("Gamma map has not yet been calculated.")
+        # plot the leaf RMSs
+        ax = plt.subplot(2,3,6)
+        self.plot_subgraph('rms', ax, show=False)
+
+        if show:
+            plt.show()
 
     def save_summary(self, filename, **kwargs):
         """Save the summary image to file."""
@@ -1426,7 +1427,7 @@ class LogBase:
         elif graph.find('rms') >= 0:
             title = 'Leaf RMS (mm)'
             ax.set_xlim([-0.5, self.axis_data.mlc.num_leaves + 0.5])  # bit of padding since bar chart alignment is center
-            plt.bar(np.arange(len(self.axis_data.mlc.get_RMS('both')))[::-1], self.axis_data.mlc.get_RMS('both'),
+            plt.bar(np.arange(len(self.axis_data.mlc.get_RMS('both')))[::-1], self.axis_data.mlc.get_RMS('both')*10,
                     align='center')
         ax.set_title(title, fontsize=fontsize)
         ax.tick_params(axis='both', labelsize=labelsize)
@@ -1450,17 +1451,17 @@ class LogBase:
         - Gamma pass percentage
         - Average gamma value
         """
-        title = "Results of file: {}\n".format(self.filename)
+        title = f"Results of file: {self.filename}\n"
         if self.treatment_type == IMAGING:
             string = title + "Log is an Imaging field; no statistics can be calculated"
         else:
-            avg_rms = "Average RMS of all leaves: {:3.3f} cm\n".format(self.axis_data.mlc.get_RMS_avg(only_moving_leaves=False))
-            max_rms = "Max RMS error of all leaves: {:3.3f} cm\n".format(self.axis_data.mlc.get_RMS_max())
-            p95 = "95th percentile error: {:3.3f} cm\n".format(self.axis_data.mlc.get_error_percentile(95, only_moving_leaves=False))
-            num_holdoffs = "Number of beam holdoffs: {:1.0f}\n".format(self.num_beamholds)
+            avg_rms = f"Average RMS of all leaves: {self.axis_data.mlc.get_RMS_avg(only_moving_leaves=False)*10:3.3f} mm\n"
+            max_rms = f"Max RMS error of all leaves: {self.axis_data.mlc.get_RMS_max()*10:3.3f} mm\n"
+            p95 = f"95th percentile error: {self.axis_data.mlc.get_error_percentile(95, only_moving_leaves=False)*10:3.3f} mm\n"
+            num_holdoffs = f"Number of beam holdoffs: {self.num_beamholds:1.0f}\n"
             self.fluence.gamma.calc_map()
-            gamma_pass = "Gamma pass %: {:2.2f}\n".format(self.fluence.gamma.pass_prcnt)
-            gamma_avg = "Gamma average: {:2.3f}\n".format(self.fluence.gamma.avg_gamma)
+            gamma_pass = f"Gamma pass %: {self.fluence.gamma.pass_prcnt:2.2f}\n"
+            gamma_avg = f"Gamma average: {self.fluence.gamma.avg_gamma:2.3f}\n"
 
             string = title + avg_rms + max_rms + p95 + num_holdoffs + gamma_pass + gamma_avg
         if printout:
@@ -1500,8 +1501,8 @@ class LogBase:
         base_filename = osp.basename(self.filename)
         under_index = base_filename.find('_')
         if under_index < 0:
-            raise NameError("Filename `{}` has no underscore. "
-                            "Place an underscore between the patient ID and the rest of the filename and try again.".format(base_filename))
+            raise NameError(f"Filename `{base_filename}` has no underscore. "
+                            "Place an underscore between the patient ID and the rest of the filename and try again.")
         return under_index
 
     def anonymize(self, inplace=False, destination=None, suffix=None):
@@ -1545,7 +1546,7 @@ class LogBase:
             dest_dir = osp.dirname(self.filename)
         else:
             if not osp.isdir(destination):
-                raise NotADirectoryError("Specified destination `{}` was not a valid directory".format(destination))
+                raise NotADirectoryError(f"Specified destination `{destination}` was not a valid directory")
             dest_dir = destination
 
         # copy or rename the files, depending on `inplace` parameter
@@ -1641,7 +1642,20 @@ class DynalogAxisData:
         # assignment of snapshot values
         # There is no "expected" MU in dynalogs, but for fluence calc purposes, it is set to that of the actual
         mu = nx()
-        self.mu = Axis(mu, mu)
+
+        # if treatment was vmat then MU is replaced by gantry angle (so stupid). If so, convert to normalized MU by looking at gantry movement.
+        def correct_vmat_mu(mu_array):
+            if mu_array[-1] == 25000:
+                return mu_array
+            else:
+                abs_diff = list(np.abs(np.diff(mu_array)))
+                # this is the cumulative gantry diff, a surrogate for MU. Normalize to 25000 to look like a "normal" dynalog
+                cum_gantry_diff = np.array([0,] + list(np.cumsum(abs_diff)/np.sum(abs_diff))) * 25000
+                return cum_gantry_diff
+
+        corrected_mu = correct_vmat_mu(mu)
+
+        self.mu = Axis(corrected_mu, corrected_mu)
         self.previous_segment_num = Axis(nx())
         self.beam_hold = Axis(nx())
         self.beam_on = Axis(nx())
@@ -1687,7 +1701,7 @@ class Dynalog(LogBase):
     def __init__(self, filename, exclude_beam_off=True):
         super().__init__(filename, exclude_beam_off)
         if not is_dlog(self.filename):
-            raise NotADynalogError("{} was not a valid Dynalog file".format(self.filename))
+            raise NotADynalogError(f"{self.filename} was not a valid Dynalog file")
         if not self._has_other_file:
             raise DynalogMatchError("Didn't find the matching dynalog file")  # TODO: clean up
 
@@ -1761,53 +1775,57 @@ class Dynalog(LogBase):
         dlog.report_basic_parameters()
         dlog.plot_summary()
 
-    def publish_pdf(self, filename=None, unit=None, notes=None, open_file=False):
+    def publish_pdf(self, filename: str, notes: str=None, metadata: dict=None, open_file: bool=False):
         """Publish (print) a PDF containing the analysis and quantitative results.
 
         Parameters
         ----------
         filename : (str, file-like object}
             The file to write the results to.
-        unit : str
-            The name of the unit.
         notes : str, list of strings
-            Any additional notes to be included. A string will print a single line,
-            while a list of strings will print each item on a new line.
+            Text; if str, prints single line.
+            If list of strings, each list item is printed on its own line.
+        open_file : bool
+            Whether to open the file using the default program after creation.
+        metadata : dict
+            Extra data to be passed and shown in the PDF. The key and value will be shown with a colon.
+            E.g. passing {'Author': 'James', 'Unit': 'TrueBeam'} would result in text in the PDF like:
+            --------------
+            Author: James
+            Unit: TrueBeam
+            --------------
         """
         self.fluence.gamma.calc_map()
-        if filename is None:
-            base, _ = osp.splitext(self.filename)
-            filename = osp.join(base, '.pdf')
-        canvas = pdf.create_pylinac_page_template(filename, analysis_title="Trajectory Log Analysis", unit=unit,
-                                                  file_name=osp.basename(self.a_logfile) + ", " + osp.basename(self.b_logfile))
-        pdf.draw_text(canvas, x=10 * cm, y=25.5 * cm,
-                      text=['DynaLog results:',
-                            'Average RMS (mm): {:2.2f}'.format(self.axis_data.mlc.get_RMS_avg() * 10),
-                            'Max RMS (mm): {:2.2f}'.format(self.axis_data.mlc.get_RMS_max() * 10),
-                            '95th Percentile error (mm): {:2.2f}'.format(self.axis_data.mlc.get_error_percentile(95)),
-                            'Number of beam holdoffs: {}'.format(self.num_beamholds),
-                            'Gamma pass (%): {:2.1f}'.format(self.fluence.gamma.pass_prcnt),
-                            'Gamma average: {:2.2f}'.format(self.fluence.gamma.avg_gamma),
-                            ])
+        canvas = pdf.PylinacCanvas(filename, page_title="Dynalog Analysis", metadata=metadata)
+        canvas.add_text(
+                      text=['Dynalog results:',
+                            f'Average RMS (mm): {self.axis_data.mlc.get_RMS_avg()*10:2.2f}',
+                            f'Max RMS (mm): {self.axis_data.mlc.get_RMS_max()*10:2.2f}',
+                            f'95th Percentile error (mm): {self.axis_data.mlc.get_error_percentile(95)*10:2.2f}',
+                            f'Number of beam holdoffs: {self.num_beamholds}',
+                            f'Gamma pass (%): {self.fluence.gamma.pass_prcnt:2.1f}',
+                            f'Gamma average: {self.fluence.gamma.avg_gamma:2.2f}',
+                            ],
+                        location=(10, 25.5))
         for idx, (x, y, graph) in enumerate(zip((2, 11, 2, 11), (14, 14, 6, 6), ('actual', 'expected', 'gamma', ''))):
             data = BytesIO()
             if idx != 3:
                 self.save_subimage(data, graph, fontsize=20)
             else:
                 self.save_subgraph(data, 'gamma', fontsize=20, labelsize=12)
-            img = pdf.create_stream_image(data)
-            canvas.drawImage(img, x * cm, y * cm, width=9 * cm, height=9 * cm, preserveAspectRatio=True)
+            canvas.add_image(data, location=(x, y), dimensions=(9, 9))
         if notes is not None:
-            pdf.draw_text(canvas, x=1 * cm, y=5.5 * cm, fontsize=14, text="Notes:")
-            pdf.draw_text(canvas, x=1 * cm, y=5 * cm, text=notes)
-        canvas.showPage()
-        pdf.add_pylinac_page_template(canvas, analysis_title='DynaLog Analysis')
+            canvas.add_text(location=(1, 5.5), font_size=14, text="Notes:")
+            canvas.add_text(location=(1, 5), text=notes)
+        canvas.add_new_page()
         for idx, (x, y, graph) in enumerate(zip((5, 5), (13, 2), ('leaf hist', 'leaf rms'))):
             data = BytesIO()
             self.save_subgraph(data, graph, fontsize=20, labelsize=12)
-            img = pdf.create_stream_image(data)
-            canvas.drawImage(img, x * cm, y * cm, width=13 * cm, height=13 * cm, preserveAspectRatio=True)
-        pdf.finish(canvas, open_file=open_file, filename=filename)
+            canvas.add_image(location=(x, y), dimensions=(13, 13), image_data=data)
+        canvas.finish()
+
+        if open_file:
+            open_path(filename)
 
     @staticmethod
     def identify_other_file(first_dlg_file, raise_find_error=True):
@@ -2016,6 +2034,8 @@ class TrajectoryLog(LogBase):
         renames = self.anon_file_renames(destination, suffix)
         if self.txt is not None:
             return [file for file in renames.values() if '.txt' in file]
+        else:
+            return []
 
     def _read_txt_file(self):
         """Read a Tlog's associated .txt file and put in under the 'txt' attribute."""
@@ -2094,55 +2114,59 @@ class TrajectoryLog(LogBase):
         print("CSV file written to: " + filename)
         return filename
 
-    def publish_pdf(self, filename=None, unit=None, notes=None, open_file=False):
+    def publish_pdf(self, filename: str, metadata: dict=None, notes: Union[str, list]=None, open_file: bool=False):
         """Publish (print) a PDF containing the analysis and quantitative results.
 
         Parameters
         ----------
         filename : (str, file-like object}
             The file to write the results to.
-        unit : str
-            The name of the unit.
         notes : str, list of strings
-            Any additional notes to be included. A string will print a single line,
-            while a list of strings will print each item on a new line.
+            Text; if str, prints single line.
+            If list of strings, each list item is printed on its own line.
+        open_file : bool
+            Whether to open the file using the default program after creation.
+        metadata : dict
+            Extra data to be passed and shown in the PDF. The key and value will be shown with a colon.
+            E.g. passing {'Author': 'James', 'Unit': 'TrueBeam'} would result in text in the PDF like:
+            --------------
+            Author: James
+            Unit: TrueBeam
+            --------------
         """
         if self.treatment_type == IMAGING:
             raise ValueError("Log is of imaging type (e.g. kV setup) and does not contain relevant gamma/leaf data")
         self.fluence.gamma.calc_map()
-        if filename is None:
-            base, _ = osp.splitext(self.filename)
-            filename = osp.join(base, '.pdf')
-        canvas = pdf.create_pylinac_page_template(filename, analysis_title="Trajectory Log Analysis", unit=unit,
-                                                  file_name=osp.basename(self.filename))
-        pdf.draw_text(canvas, x=10 * cm, y=25.5 * cm,
+        canvas = pdf.PylinacCanvas(filename, page_title="Trajectory Log Analysis", metadata=metadata)
+        canvas.add_text(
                       text=['Trajectory Log results:',
-                            'Average RMS (mm): {:2.2f}'.format(self.axis_data.mlc.get_RMS_avg()*10),
-                            'Max RMS (mm): {:2.2f}'.format(self.axis_data.mlc.get_RMS_max()*10),
-                            '95th Percentile error (mm): {:2.2f}'.format(self.axis_data.mlc.get_error_percentile(95)),
-                            'Number of beam holdoffs: {}'.format(self.num_beamholds),
-                            'Gamma pass (%): {:2.1f}'.format(self.fluence.gamma.pass_prcnt),
-                            'Gamma average: {:2.2f}'.format(self.fluence.gamma.avg_gamma),
-                            ])
+                            f'Average RMS (mm): {self.axis_data.mlc.get_RMS_avg()*10:2.2f}',
+                            f'Max RMS (mm): {self.axis_data.mlc.get_RMS_max()*10:2.2f}',
+                            f'95th Percentile error (mm): {self.axis_data.mlc.get_error_percentile(95)*10:2.2f}',
+                            f'Number of beam holdoffs: {self.num_beamholds}',
+                            f'Gamma pass (%): {self.fluence.gamma.pass_prcnt:2.1f}',
+                            f'Gamma average: {self.fluence.gamma.avg_gamma:2.2f}',
+                            ],
+                        location=(10, 25.5))
         for idx, (x, y, graph) in enumerate(zip((2, 11, 2, 11), (14, 14, 6, 6), ('actual', 'expected', 'gamma', ''))):
             data = BytesIO()
             if idx != 3:
                 self.save_subimage(data, graph, fontsize=20)
             else:
                 self.save_subgraph(data, 'gamma', fontsize=20, labelsize=12)
-            img = pdf.create_stream_image(data)
-            canvas.drawImage(img, x * cm, y * cm, width=9 * cm, height=9 * cm, preserveAspectRatio=True)
+            canvas.add_image(data, location=(x, y), dimensions=(9, 9))
         if notes is not None:
-            pdf.draw_text(canvas, x=1 * cm, y=5.5 * cm, fontsize=14, text="Notes:")
-            pdf.draw_text(canvas, x=1 * cm, y=5 * cm, text=notes)
-        canvas.showPage()
-        pdf.add_pylinac_page_template(canvas, analysis_title='Trajectory Log Analysis')
+            canvas.add_text(location=(1, 5.5), font_size=14, text="Notes:")
+            canvas.add_text(location=(1, 5), text=notes)
+        canvas.add_new_page()
         for idx, (x, y, graph) in enumerate(zip((5, 5), (13, 2), ('leaf hist', 'leaf rms'))):
             data = BytesIO()
             self.save_subgraph(data, graph, fontsize=20, labelsize=12)
-            img = pdf.create_stream_image(data)
-            canvas.drawImage(img, x * cm, y * cm, width=13 * cm, height=13 * cm, preserveAspectRatio=True)
-        pdf.finish(canvas, open_file=open_file, filename=filename)
+            canvas.add_image(location=(x, y), dimensions=(13, 13), image_data=data)
+        canvas.finish()
+
+        if open_file:
+            open_path(filename)
 
     @property
     def num_beamholds(self):
@@ -2199,9 +2223,9 @@ def anonymize(source, inplace=False, destination=None, recursive=True):
                 if not recursive:
                     break
             concurrent.futures.wait(futures)
-        print("All logs in {} have been anonymized.".format(source))
+        print(f"All logs in {source} have been anonymized.")
     else:
-        raise NotALogError("{} is not a log file or directory.".format(source))
+        raise NotALogError(f"{source} is not a log file or directory.")
 
 
 def load_log(file_or_dir, exclude_beam_off=True, recursive=True):
@@ -2224,6 +2248,8 @@ def load_log(file_or_dir, exclude_beam_off=True, recursive=True):
     if io.is_url(file_or_dir):
         file_or_dir = io.get_url(file_or_dir)
     if osp.isfile(file_or_dir):
+        if io.is_zipfile(file_or_dir):
+            return MachineLogs.from_zip(file_or_dir)
         if not is_log(file_or_dir):
             raise NotALogError("Not a valid log")
         elif is_tlog(file_or_dir):
@@ -2231,11 +2257,9 @@ def load_log(file_or_dir, exclude_beam_off=True, recursive=True):
         else:
             return Dynalog(file_or_dir, exclude_beam_off)
     elif osp.isdir(file_or_dir):
-        MachineLogs(file_or_dir, recursive)
-    elif io.is_zipfile(file_or_dir):
-        MachineLogs.from_zip(file_or_dir)
+        return MachineLogs(file_or_dir, recursive)
     else:
-        raise NotALogError("'{}' did not point to a valid file, directory, or ZIP archive".format(file_or_dir))
+        raise NotALogError(f"'{file_or_dir}' did not point to a valid file, directory, or ZIP archive")
 
  
 def is_log(filename):
@@ -2264,9 +2288,12 @@ def _is_log(filename, keys):
         is in the file it will return true.
     """
     if osp.isfile(filename):
-        with open(filename, mode='rb') as f:
-            header_sample = f.read(5).decode()
-        return any(key in header_sample for key in keys)
+        try:
+            with open(filename, mode='rb') as f:
+                header_sample = f.read(5).decode()
+            return any(key in header_sample for key in keys)
+        except:
+            return False
     else:
         return False
 

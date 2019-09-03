@@ -3,6 +3,75 @@
 Changelog
 =========
 
+V 2.2.6
+-------
+
+Bug Fixes
+^^^^^^^^^
+
+* `#157 <https://github.com/jrkerns/pylinac/issues/157>`_ This behavior is revered to pre-2.2.2 behavior to match the DFV and other software.
+* `#167 <https://github.com/jrkerns/pylinac/issues/167>`_ Originally, the fix for this was to raise an error and point to a workaround. At the time the fix was to add a parameter to v2.3.
+   Behavior was able to be changed internally to handle this case without an API change.
+
+
+V 2.2.5
+-------
+
+General
+^^^^^^^
+
+The `watcher` function has had several issues. It has been disabled and will be removed in v2.3.
+
+Bug Fixes
+^^^^^^^^^
+
+* `#173 <https://github.com/jrkerns/pylinac/issues/173>`_ When forcing inversion of picket fence, the inversion came after the orientation determination, causing orientation to be wrong when inversion was needed.
+* `#171 <https://github.com/jrkerns/pylinac/issues/171>`_ The `load_log` function was not working correctly when passing a directory or ZIP archive.
+* `#172 <https://github.com/jrkerns/pylinac/issues/172>`_ Calling `publish_pdf` from log_analyzer without passing a filename would fail.
+* `#169 <https://github.com/jrkerns/pylinac/issues/169>`_ VMAT Dynalogs were calculating fluence incorrectly for CCW plans due to the gantry angle replacing the dose.
+* `#160 <https://github.com/jrkerns/pylinac/issues/160>`_ While addressing #160 initially, Trajectory logs were unknowningly affected. Behavior has been reverted to pre-2.2.2 behavior and documentation changed.
+
+
+V 2.2.4
+-------
+
+Bug Fixes
+^^^^^^^^^
+
+* `#165 <https://github.com/jrkerns/pylinac/issues/165>`_ Machine log plots and PDFs showing the Leaf RMS were shown in cm, not in mm, as the axis title indicated.
+* `#167 <https://github.com/jrkerns/pylinac/issues/167>`_ Picket fence images where the pickets are too close to the edge perpendicular to the pickets will fail. This adds an explicit error and mentions a workaround. The next major version will include a `padding` parameter to apply this workaround.
+* `#168 <https://github.com/jrkerns/pylinac/issues/168>`_ Picket fence analyses now crop 2 pixels from every edge. This will allow Elekta images to be analyzed since they inexplicably have a column of dead pixels in EPID images. Should not affect Varian images.
+
+V 2.2.3
+-------
+
+Bug Fixes
+^^^^^^^^^
+
+* `#158 <https://github.com/jrkerns/pylinac/issues/158>`_ Catphan roll determination algorithm has slightly widened the air bubble-finding criterion.
+
+
+V 2.2.2
+-------
+
+Bug Fixes
+^^^^^^^^^
+
+* `#157 <https://github.com/jrkerns/pylinac/issues/157>`_ Dynalog MLC leaf error was calculated incorrectly. Expected positions were off by a row. Error results should be lower on average.
+* `#160 <https://github.com/jrkerns/pylinac/issues/160>`_ Dynalog MLC leaf internal pair mapping (1-61 vs 1-120) was different than documentation. Fluence calculations should not change.
+* `#162 <https://github.com/jrkerns/pylinac/issues/162>`_ The LeedsTOR `angle_offset` in the `.analyze()` method was not being followed by the high-contrast bubbles.
+* `#144 <https://github.com/jrkerns/pylinac/issues/144>`_ The LeedsTOR angle determination is much more robust. Previously, only certain orientations of the phantom would correctly identify.
+
+
+V 2.2.1
+-------
+
+Bug Fixes
+^^^^^^^^^
+
+* `#153 <https://github.com/jrkerns/pylinac/issues/153>`_ Log analyser PDF publishing fix.
+* `#155 <https://github.com/jrkerns/pylinac/issues/155>`_ VMAT PDF report had tolerance listed incorrectly (absolute vs percentage) causing most tolerances to appear as zero due to rounding.
+
 V 2.2.0
 -------
 
@@ -50,6 +119,7 @@ VMAT
 TG-51/Calibration
 ^^^^^^^^^^^^^^^^^
 
+* `#127 <https://github.com/jrkerns/pylinac/issues/127>`_ A TRS-398 module has been added. There are two main classes: ``TRS398Photon`` and ``TRS398Electron``.
 * `#129 <https://github.com/jrkerns/pylinac/issues/129>`_ The TG-51 module has been refactored to add a ``TG51ElectronLegacy`` and ``TG51ElectronModern`` calibration class.
   The Legacy class uses the classic TG-51 values that require a kecal value and a Pgradient measurement. The Modern
   class uses the equations from Muir & Rogers 2014 to calculate kQ that updates and incorporates the Pgradient and
@@ -57,14 +127,14 @@ TG-51/Calibration
   as the kQ values for photons already have.
 * Certain parameters have been refactored: ``volt_high`` and ``volt_low`` have been refactored to ``voltage_reference``
   and ``voltage_reduced``, ``m_raw``, ``m_low``, and ``m_opp`` have been refactored to ``m_reference``, ``m_reduced``,
-  and ``m_opposite``. These parameters are also the same for the TRS-398 classes
+  and ``m_opposite``. These parameters are also the same for the TRS-398 classes (see #127).
 * The ``kq`` function has been separated into three functions: ``kq_photon_pdd10x``, ``kq_photon_tpr2010``, and
   ``kq_electron``.
-* A PDD(20,10) to TPR(20,10) converter function has been added.
+* A PDD(20,10) to TPR(20,10) converter function has been added: `tpr2010_from_pdd2010`.
+* Pressure and temperature conversion helper functions have been added: `mmHg2kPa`, `mbar2kPa`, `fahrenheit2celsius`.
   This can be used in either TG-51 or TRS-398 to get TPR without actually needing to measure it.
 * Defaults were removed from most functions to avoid possible miscalibration/miscalculation.
-* Most parameters were changed to be keyword only. This will prevent accidental miscalculations from simple positional arguments.
-* `#127 <https://github.com/jrkerns/pylinac/issues/127>`_ A TRS-398 module has been added. There are two main classes: ``TRS398Photon`` and ``TRS398Electron``.
+* Most parameters of both TG-51 and TRS-398 were changed to be keyword only. This will prevent accidental miscalculations from simple positional argument mismatches.
 
 Bug Fixes
 ^^^^^^^^^

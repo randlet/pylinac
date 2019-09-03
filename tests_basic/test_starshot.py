@@ -1,5 +1,6 @@
 import os
 import os.path as osp
+import tempfile
 from unittest import TestCase
 
 import matplotlib.pyplot as plt
@@ -56,8 +57,9 @@ class StarMixin(LocationMixin):
     radius = 0.85
     test_all_radii = True
     fwxm = True
-    wobble_tolerance = 0.2
+    wobble_tolerance = 0.1
     kwargs = {'sid': 1000}
+    verbose = False
 
     @classmethod
     def setUpClass(cls):
@@ -101,9 +103,13 @@ class StarMixin(LocationMixin):
         """Test that the wobble stays roughly the same for all radii."""
         if self.test_all_radii:
             star = self.construct_star()
+            radii = []
             for radius in np.linspace(0.9, 0.25, 8):
                 star.analyze(radius=float(radius), min_peak_height=self.min_peak_height, recursive=self.recursive, fwhm=self.fwxm)
                 self.assertAlmostEqual(star.wobble.diameter_mm, self.wobble_diameter_mm, delta=self.wobble_tolerance)
+                radii.append(star.wobble.diameter_mm)
+            if self.verbose:
+                print(f"Radii mean: {np.mean(radii):2.2f}, range: {np.max(radii) - np.min(radii):2.2f}")
 
 
 class Demo(StarMixin, TestCase):
@@ -111,6 +117,7 @@ class Demo(StarMixin, TestCase):
     wobble_diameter_mm = 0.30
     wobble_center = Point(1270, 1437)
     num_rad_lines = 4
+    # outside program: 0.24-0.26mm
 
     @classmethod
     def construct_star(cls):
@@ -121,17 +128,16 @@ class Multiples(StarMixin, TestCase):
     """Test a starshot composed of multiple individual EPID images."""
     num_rad_lines = 9
     wobble_center = Point(254, 192)
-    wobble_diameter_mm = 0.8
-    test_all_radii = False
-    wobble_tolerance = 0.3
-    passes = True
+    wobble_diameter_mm = 0.7
+    wobble_tolerance = 0.2
+    file_path = ['set']
+    is_dir = True
 
-    @classmethod
-    def setUpClass(cls):
-        img_dir = osp.join(TEST_DIR, 'set')
-        img_files = [osp.join(img_dir, filename) for filename in os.listdir(img_dir)]
-        cls.star = Starshot.from_multiple_images(img_files)
-        cls.star.analyze(radius=0.8)
+    def test_loading_from_zip(self):
+        img_zip = osp.join(TEST_DIR, 'set.zip')
+        star = Starshot.from_zip(img_zip)
+        # shouldn't raise
+        star.analyze()
 
 
 class Starshot1(StarMixin, TestCase):
@@ -139,6 +145,7 @@ class Starshot1(StarMixin, TestCase):
     wobble_center = Point(508, 683)
     wobble_diameter_mm = 0.23
     num_rad_lines = 4
+    # outside 0.20-0.27mm
 
 
 class Starshot1FWHM(Starshot1):
@@ -150,6 +157,7 @@ class CRStarshot(StarMixin, TestCase):
     wobble_center = Point(1030.5, 1253.6)
     wobble_diameter_mm = 0.3
     num_rad_lines = 6
+    # outside 0.25-0.26mm
 
 
 class GeneralTests(Demo, TestCase):
@@ -172,7 +180,7 @@ class GeneralTests(Demo, TestCase):
         """Check that the demo image was actually inverted, as it needs to be."""
         star = Starshot.from_demo_image()
         top_left_corner_val_before = star.image.array[0, 0]
-        star._check_image_inversion()
+        star.image.check_inversion_by_histogram(percentiles=[4, 50, 96])
         top_left_corner_val_after = star.image.array[0, 0]
         self.assertNotEqual(top_left_corner_val_before, top_left_corner_val_after)
 
@@ -182,3 +190,8 @@ class GeneralTests(Demo, TestCase):
         self.test_passed()
         self.test_wobble_center()
         self.test_wobble_diameter()
+
+    def test_publish_pdf(self):
+        with tempfile.TemporaryFile() as t:
+            self.star.publish_pdf(t, notes='stuff', metadata={"Unit": 'TB1'})
+

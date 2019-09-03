@@ -33,10 +33,10 @@ few concepts that should be grasped before diving in.
     .. warning:: When slicing or analyzing leaf data, keep the Varian 1-index base in mind.
 
   Leaf data is stored in a dictionary, with the leaf number as the key, from 1 up to the number of MLC leaves. E.g. if the machine has a
-  Millennium 120 standard MLC model, leaf data will have 120 dictionary items from 1 to 120. Leaf numbers have an offset of half the
-  number of leaves. I.e. leaves 1 and 120 are a pair, as are 2 and 119, on up to leaves 60 and 61. In such a case, leaves 61-120 correspond
+  Millennium 120 standard MLC model, leaf data will have 120 dictionary items from 1 to 120. Leaves from each bank have an offset of half the
+  number of leaves. I.e. leaves A1 and B1 = 1 and 61. Thus, leaves 61-120 correspond
   to the B-bank, while leaves 1-60 correspond to the A-bank. This can be described by a function
-  :math:`(A_{leaf}, B_{leaf}) = (n, N_{leaves} + 1 - n)`, where :math:`n` is the leaf number and :math:`N_{leaves}` is the number of leaves.
+  :math:`(A_{n}, B_{n}) = (n, n + N_{leaves}/2)`, where :math:`n` is the leaf number and :math:`N_{leaves}` is the number of leaves.
 
 * **Units** - Units follow the Trajectory log specification: linear axes are in cm, rotational axes in degrees, and MU for dose.
 
@@ -44,7 +44,12 @@ few concepts that should be grasped before diving in.
     Dynalog files are inherently in mm for collimator and gantry axes, tenths of degrees for rotational axes, and
     MLC positions are not at isoplane. For consistency, Dynalog values are converted to Trajectory log specs, meaning
     linear axes, both collimator and MLCs are in cm at isoplane, and rotational axes are in degrees. Dynalog MU is always
-    from 0 to 25000 no matter the delivered MU (i.e. it's relative), unless it was a VMAT delivery, in which case the MU is actually the gantry position.
+    from 0 to 25000 no matter the delivered MU (i.e. it's relative), unless it was a VMAT delivery, in which case the
+    gantry position is substituted in the dose fraction column.
+
+  .. warning::
+    Dynalog VMAT files replace the dose fraction column with the gantry position. Unfortunately, because of the variable dose rate of Varian linacs the gantry position
+    is not a perfect surrogate for dose, but there is no other choice. Thus, fluence calculations will use the relative gantry movement as the dose in fluence calculations.
 
 
 * **All data Axes are similar** - Log files capture machine data in "control cycles", aka "snapshots" or "heartbeats". Let's assume a
@@ -102,10 +107,17 @@ Note that you can also save data in a PDF report:
 Loading Data
 ------------
 
+Loading Single Logs
+^^^^^^^^^^^^^^^^^^^
+
 Logs can be loaded two ways.
-The first way is through the main helper function ``load_log``. Note that if you've used pylinac versions <1.6
-the helper function is new and can be a replacement for ``MachineLog`` and ``MachineLogs``, depending on the context
-as discussed below. The second way is loading directly through the class:
+The first way is through the main helper function :func:`~pylinac.log_analyzer.load_log`.
+
+.. note::
+
+    If you've used pylinac versions <1.6
+    the helper function is new and can be a replacement for ``MachineLog`` and ``MachineLogs``, depending on the context
+    as discussed below.
 
 .. code-block:: python
 
@@ -118,19 +130,17 @@ In addition, a folder, ZIP archive, or URL can also be passed:
 
 .. code-block:: python
 
-    log1 = load_log('path/to/folder')
     log2 = load_log('http://myserver.com/logs/2.dlg')
-    log3 = load_log('path/to/logs.zip')
 
 .. note:: If loading from a URL the object can be a file or ZIP archive.
 
 Pylinac will automatically infer the log type and load it into the appropriate data structures for analysis.
-The ``load_log`` function is a convenient wrapper around the classes within the log analysis module.
+The :func:`~pylinac.log_analyzer.load_log` function is a convenient wrapper around the classes within the log analysis module.
 However, logs can be instantiated a second way: directly through the classes.
 
 .. code-block:: python
 
-    from pylinac import Dynalog, TrajectoryLog, MachineLogs
+    from pylinac import Dynalog, TrajectoryLog
 
     dlog_path = "C:/path/to/dlog.dlg"
     dlog = Dynalog(dlog_path)
@@ -138,8 +148,24 @@ However, logs can be instantiated a second way: directly through the classes.
     tlog_path = "C:/path/to/tlog.bin"
     tlog = TrajectoryLog(tlog_path)
 
+Loading Multiple Logs
+^^^^^^^^^^^^^^^^^^^^^
+
+Loading multiple files is also possible using the :func:`~pylinac.log_analyzer.load_log` function as listed above.
+The logs can also be directly instantiated by using :class:`~pylinac.log_analyzer.MachineLogs`. Acceptable inputs include a folder and zip archive.
+
+.. code-block:: python
+
+    from pylinac import load_log, MachineLogs
+
     path_to_folder = "C:/path/to/dir"
+
+    # from folder; equivalent
     logs = MachineLogs(path_to_folder)
+    logs = load_log(path_to_folder)
+
+    # from ZIP archive
+    logs = load_log('path/to/logs.zip')
 
 
 Working with the Data

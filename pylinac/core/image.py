@@ -15,8 +15,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image as pImage
 from scipy import ndimage
-from scipy.misc import imresize
 import scipy.ndimage.filters as spf
+from skimage.transform import resize
 
 from .utilities import is_close, minmax_scale
 from .decorators import type_accept, value_accept
@@ -24,7 +24,7 @@ from .geometry import Point
 from .io import get_url, TemporaryZipDirectory, retrieve_filenames, is_dicom_image, retrieve_dicom_file
 from .profile import stretch as stretcharray
 from .typing import NumberLike
-from ..settings import get_dicom_cmap
+from ..settings import get_dicom_cmap, PATH_TRUNCATION_LENGTH
 
 ARRAY = 'Array'
 DICOM = 'DICOM'
@@ -38,7 +38,7 @@ def prepare_for_classification(path: str):
     """Load and resize the image and return as flattened numpy array. Used when converting an image into
     a classification feature dataset"""
     img = load(path, dtype=np.float32)
-    resized_img = imresize(img.array, size=(100, 100), mode='F').flatten()
+    resized_img = resize(img.array, output_shape=(100, 100)).flatten()
     rescaled_img = minmax_scale(resized_img)
     return rescaled_img
 
@@ -155,7 +155,7 @@ def load(path: str, **kwargs) -> ImageLike:
     elif _is_image_file(path):
         return FileImage(path, **kwargs)
     else:
-        raise TypeError("The argument `{0}` was not found to be a valid DICOM file, Image file, or array".format(path))
+        raise TypeError(f"The argument `{path}` was not found to be a valid DICOM file, Image file, or array")
 
 
 def load_url(url: str, progress_bar: bool=True, **kwargs):
@@ -220,7 +220,7 @@ def load_multiples(image_file_list: List, method: str='mean', stretch: bool=True
 
     # replace array of first object and return
     first_img.array = combined_arr
-    first_img.check_inversion()
+    first_img.check_inversion_by_histogram()
     return first_img
 
 
@@ -263,19 +263,21 @@ class BaseImage:
             The path to the image.
         """
         if not osp.isfile(path):
-            raise FileExistsError("File `{0}` does not exist. Verify the file path name.".format(path))
+            raise FileExistsError(f"File `{path}` does not exist. Verify the file path name.")
         self.path = path
         self.base_path = osp.basename(path)
+
+    @property
+    def truncated_path(self):
+        if len(self.path) > PATH_TRUNCATION_LENGTH:
+            return self.path[:PATH_TRUNCATION_LENGTH // 2] + '...' + self.path[-PATH_TRUNCATION_LENGTH // 2:]
+        else:
+            return self.path
 
     @classmethod
     def from_multiples(cls, filelist: List[str], method: str='mean', stretch: bool=True, **kwargs):
         """Load an instance from multiple image items. See :func:`~pylinac.core.image.load_multiples`."""
         return load_multiples(filelist, method, stretch, **kwargs)
-
-    @property
-    def pdf_path(self) -> str:
-        base, _ = osp.splitext(self.path)
-        return osp.join(base + '.pdf')
 
     @property
     def center(self) -> Point:
@@ -418,13 +420,6 @@ class BaseImage:
         """Wrapper for numpy.rot90; rotate the array by 90 degrees CCW."""
         self.array = np.rot90(self.array, n)
 
-    def resize(self, size: Union[int, float, Tuple[int, int]], interp: str='bilinear'):
-        """Resize/scale the image.
-
-        Wrapper for scipy's `imresize <http://docs.scipy.org/doc/scipy-0.14.0/reference/generated/scipy.misc.imresize.html>`_:
-        """
-        self.array = imresize(self.array, size=size, interp=interp, mode='F')
-
     @value_accept(kind=('high', 'low'))
     def threshold(self, threshold: int, kind: str='high'):
         """Apply a high- or low-pass threshold filter.
@@ -534,6 +529,26 @@ class BaseImage:
         if avg > np.mean(self.array.flatten()):
             self.invert()
 
+    def check_inversion_by_histogram(self, percentiles=(5, 50, 95)):
+        """Check the inversion of the image using histogram analysis. The assumption is that the image
+        is mostly background-like values and that there is a relatively small amount of dose getting to the image
+        (e.g. a picket fence image). This function looks at the distance from one percentile to another to determine
+        if the image should be inverted.
+
+        Parameters
+        ----------
+        percentiles : 3-element tuple
+            The 3 percentiles to compare. Default is (5, 50, 95). Recommend using (x, 50, y). To invert the other way
+            (where pixel value is *decreasing* with dose, reverse the percentiles, e.g. (95, 50, 5).
+        """
+        p5 = np.percentile(self.array, percentiles[0])
+        p50 = np.percentile(self.array, percentiles[1])
+        p95 = np.percentile(self.array, percentiles[2])
+        dist_to_5 = abs(p50 - p5)
+        dist_to_95 = abs(p50 - p95)
+        if dist_to_5 > dist_to_95:
+            self.invert()
+
     @value_accept(threshold=(0.0, 1.0))
     def gamma(self, comparison_image: ImageLike, doseTA: NumberLike=1, distTA: NumberLike=1,
               threshold: NumberLike=0.1, ground: bool=True, normalize: bool=True):
@@ -574,21 +589,21 @@ class BaseImage:
         """
         # error checking
         if not is_close(self.dpi, comparison_image.dpi, delta=0.1):
-            raise AttributeError("The image DPIs to not match: {:.2f} vs. {:.2f}".format(self.dpi, comparison_image.dpi))
+            raise AttributeError(f"The image DPIs to not match: {self.dpi:.2f} vs. {comparison_image.dpi:.2f}")
         same_x = is_close(self.shape[1], comparison_image.shape[1], delta=1.1)
         same_y = is_close(self.shape[0], comparison_image.shape[0], delta=1.1)
         if not (same_x and same_y):
-            raise AttributeError("The images are not the same size: {} vs. {}".format(self.shape, comparison_image.shape))
+            raise AttributeError(f"The images are not the same size: {self.shape} vs. {comparison_image.shape}")
 
         # set up reference and comparison images
         ref_img = ArrayImage(copy.copy(self.array))
-        ref_img.check_inversion()
+        ref_img.check_inversion_by_histogram()
         if ground:
             ref_img.ground()
         if normalize:
             ref_img.normalize()
         comp_img = ArrayImage(copy.copy(comparison_image.array))
-        comp_img.check_inversion()
+        comp_img.check_inversion_by_histogram()
         if ground:
             comp_img.ground()
         if normalize:
@@ -607,7 +622,7 @@ class BaseImage:
 
         # equation: (measurement - reference) / sqrt ( doseTA^2 + distTA^2 * image_gradient^2 )
         subtracted_img = np.abs(comp_img - ref_img)
-        denominator = np.sqrt((doseTA / 100.0 ** 2) + ((distTA_pixels ** 2) * (grad_img ** 2)))
+        denominator = np.sqrt(((doseTA / 100.0) ** 2) + ((distTA_pixels ** 2) * (grad_img ** 2)))
         gamma_map = subtracted_img / denominator
 
         return gamma_map
@@ -808,8 +823,7 @@ class LinacDicomImage(DicomImage):
                 match = re.search('(?<={})\d+'.format(axis_str.lower()), filename.lower())
                 if match is None:
                     raise ValueError(
-                            "The filename contains '{}' but could not read a number following it. Use the format '...{}<#>...'".format(
-                                axis_str, axis_str))
+                            f"The filename contains '{axis_str}' but could not read a number following it. Use the format '...{axis_str}<#>...'")
                 else:
                     axis = float(match.group())
                     axis_found = True
@@ -989,7 +1003,7 @@ class DicomImageStack:
 
         # check that at least 1 image was loaded
         if len(self.images) < 1:
-            raise FileNotFoundError("No files were found in the specified location: {0}".format(folder))
+            raise FileNotFoundError(f"No files were found in the specified location: {folder}")
 
         # error checking
         if check_uid:

@@ -1,8 +1,8 @@
 
 import sys
 
-__version__ = '2.2.0'
-__version_info__ = (2, 2, 0)
+__version__ = '2.2.6'
+__version_info__ = (2, 2, 6)
 
 # check python version
 if sys.version_info[0] < 3 or sys.version_info[1] < 6:
@@ -21,5 +21,5 @@ from pylinac.vmat import DRMLC, DRGS
 from pylinac.winston_lutz import WinstonLutz
 from pylinac import calibration
 
-from pylinac.watcher import watch, process
+from pylinac.watcher import process
 from pylinac.py_gui import gui  # must be after everything since it imports it all

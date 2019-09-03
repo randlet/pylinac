@@ -21,18 +21,17 @@ Features:
 """
 import copy
 import io
-from typing import Union, List
+from typing import List, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy import optimize
 
-from .core import image
+from .core import image, pdf
 from .core.decorators import value_accept
-from .core.geometry import Point, Line, Circle
-from .core.io import get_url, TemporaryZipDirectory, retrieve_demo_file
-from .core import pdf
-from .core.profile import SingleProfile, CollapsedCircleProfile
+from .core.geometry import Circle, Line, Point
+from .core.io import TemporaryZipDirectory, get_url, retrieve_demo_file
+from .core.profile import CollapsedCircleProfile, SingleProfile
 from .core.utilities import open_path
 from .settings import get_dicom_cmap
 
@@ -128,29 +127,11 @@ class Starshot:
         with TemporaryZipDirectory(zip_file) as tmpdir:
             image_files = image.retrieve_image_files(tmpdir)
             if not image_files:
-                raise IndexError("No valid starshot images were found in {}".format(zip_file))
+                raise IndexError(f"No valid starshot images were found in {zip_file}")
             if len(image_files) > 1:
                 return cls.from_multiple_images(image_files, **kwargs)
             else:
                 return cls(image_files[0], **kwargs)
-
-    def _check_image_inversion(self):
-        """Check the image for proper inversion, i.e. that pixel value increases with dose."""
-        # sum the image along each axis in the middle 80% to avoid pin pricks, artifacts, etc.
-        x_lt_edge, x_rt_edge = int(self.image.shape[1] * 0.1), int(self.image.shape[1] * 0.9)
-        x_sum = np.sum(self.image.array[:, x_lt_edge:x_rt_edge], 0)
-
-        y_lt_edge, y_rt_edge = int(self.image.shape[0] * 0.1), int(self.image.shape[0] * 0.9)
-        y_sum = np.sum(self.image.array[y_lt_edge:y_rt_edge, :], 1)
-
-        # determine the point of max value for each sum profile
-        xmaxind = np.argmax(x_sum)
-        ymaxind = np.argmax(y_sum)
-
-        # If that maximum point isn't near the center (central 1/3), invert image.
-        center_in_central_third = (len(x_sum) * 2 / 3 > xmaxind > len(x_sum) / 3) and (len(y_sum) * 2 / 3 > ymaxind > len(y_sum) / 3)
-        if not center_in_central_third:
-            self.image.invert()
 
     def _get_reasonable_start_point(self) -> Point:
         """Set the algorithm starting point automatically.
@@ -224,7 +205,7 @@ class Starshot:
             If a reasonable wobble value was not found.
         """
         self.tolerance = tolerance
-        self._check_image_inversion()
+        self.image.check_inversion_by_histogram(percentiles=[4, 50, 96])
 
         if start_point is None:
             start_point = self._get_reasonable_start_point()
@@ -253,7 +234,7 @@ class Starshot:
                     try:
                         min_peak_height = next(peak_gen)
                     except StopIteration:
-                    # if no height setting works, change the radius and reset the height
+                        # if no height setting works, change the radius and reset the height
                         try:
                             radius = next(radius_gen)
                             peak_gen = get_peak_height()
@@ -264,7 +245,7 @@ class Starshot:
             else:  # if no errors are raised
                 # set the focus point to the wobble minimum
                 # focus_point = self.wobble.center
-            # finally:
+                # finally:
                 # stop after first iteration if not recursive
                 if not recursive:
                     wobble_unreasonable = False
@@ -303,6 +284,7 @@ class Starshot:
             return max(line.distance_to(Point(p[0], p[1])) for line in lines)
 
         res = optimize.minimize(distance, sp.as_array(), args=(self.lines,), method='Nelder-Mead', options={'ftol': 0.001})
+        # res = optimize.least_squares(distance, sp.as_array(), args=(self.lines,), ftol=0.001)
 
         self.wobble.radius = res.fun
         self.wobble.radius_mm = res.fun / self.image.dpmm
@@ -326,10 +308,9 @@ class Starshot:
         string
             A string with a statement of the minimum circle.
         """
-        string = ('\nResult: {} \n\n' +
-                  'The minimum circle that touches all the star lines has a diameter of {:2.3f} mm. \n\n' +
-                  'The center of the minimum circle is at {:3.1f}, {:3.1f}').format(self._passfail_str, self.wobble.radius_mm*2,
-                                                                                    self.wobble.center.x, self.wobble.center.y)
+        string = (f'\nResult: {self._passfail_str} \n\n' +
+                  f'The minimum circle that touches all the star lines has a diameter of {self.wobble.radius_mm*2:2.3f} mm. \n\n' +
+                  f'The center of the minimum circle is at {self.wobble.center.x:3.1f}, {self.wobble.center.y:3.1f}')
         return string
 
     def plot_analyzed_image(self, show: bool=True):
@@ -441,9 +422,9 @@ class Starshot:
             self.save_analyzed_subimage(data, img)
             canvas.add_image(data, location=(4, height), dimensions=(13, 13))
         text = ['Starshot results:',
-                'Source-to-Image Distance (mm): {:2.0f}'.format(self.image.sid),
-                'Tolerance (mm): {:2.1f}'.format(self.tolerance),
-                "Minimum circle diameter (mm): {:2.2f}".format(self.wobble.radius_mm*2),
+                f'Source-to-Image Distance (mm): {self.image.sid:2.0f}',
+                f'Tolerance (mm): {self.tolerance:2.1f}',
+                f"Minimum circle diameter (mm): {self.wobble.radius_mm*2:2.2f}",
                 ]
         canvas.add_text(text=text, location=(10, 25.5), font_size=12)
         if notes is not None:
@@ -540,8 +521,11 @@ class StarProfile(CollapsedCircleProfile):
     """Class that holds and analyzes the circular profile which finds the radiation lines."""
     def __init__(self, image, start_point, radius, min_peak_height, min_peak_distance, fwhm):
         radius = self._convert_radius_perc2pix(image, start_point, radius)
-        super().__init__(center=start_point, radius=radius, image_array=image.array, width_ratio=0.1)
-        self.get_peaks(min_peak_height, min_peak_distance=min_peak_distance, fwhm=fwhm)
+        super().__init__(center=start_point,
+                         radius=radius,
+                         image_array=image.array,
+                         width_ratio=0.1)
+        super().__init__(center=start_point, radius=radius, image_array=image.array, width_ratio=0.1, sampling_ratio=3)
 
     @staticmethod
     def _convert_radius_perc2pix(image, start_point, radius):
@@ -566,7 +550,7 @@ class StarProfile(CollapsedCircleProfile):
     def get_peaks(self, min_peak_height, min_peak_distance=0.02, fwhm=True):
         """Determine the peaks of the profile."""
         self._roll_prof_to_midvalley()
-        # self.filter(size=0.002, kind='gaussian')
+        self.filter(size=0.003, kind='gaussian')
         self.ground()
         if fwhm:
             self.find_fwxm_peaks(x=80, threshold=min_peak_height, min_distance=min_peak_distance, interpolate=True)

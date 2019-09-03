@@ -6,6 +6,7 @@ import os.path as osp
 import subprocess
 import struct
 from typing import Union, Sequence
+from datetime import datetime
 
 import pydicom
 import numpy as np
@@ -82,7 +83,7 @@ def typed_property(name, expected_type_or_tuple_of_types):
     @prop.setter
     def prop(self, value):
         if not isinstance(value, expected_type_or_tuple_of_types):
-            raise TypeError("{0} must be a {1}. Got: {2}".format(name, expected_type_or_tuple_of_types, type(value)))
+            raise TypeError(f"{name} must be a {expected_type_or_tuple_of_types}. Got: {type(value)}")
         setattr(self, storage_name, value)
 
     return prop
@@ -178,7 +179,7 @@ def decode_binary(file, dtype, num_values=1, cursor_shift=0):
         if len(output) == 1:
             output = float(output)
     else:
-        raise TypeError("datatype '{}' was not valid".format(dtype))
+        raise TypeError(f"datatype '{dtype}' was not valid")
 
     # shift cursor if need be (e.g. if a reserved section follows)
     if cursor_shift:
@@ -196,3 +197,12 @@ def open_path(path: str):
     elif os.name == 'nt':
         launcher = "explorer"
     subprocess.call([launcher, path])
+
+
+def file_exists(filename: str):
+    """Check if the file exists and if it does add a timestamp"""
+    if osp.exists(filename):
+        filename, ext = osp.splitext(filename)
+        mytime = datetime.now().strftime("%Y%m%d%H%M%S")
+        filename = filename + mytime + ext
+    return filename

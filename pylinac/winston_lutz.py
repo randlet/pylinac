@@ -2,36 +2,39 @@
 
 Features:
 
+* **Couch shift instructions** - After running a WL test, get immediate feedback on how to shift the couch.
+  Couch values can also be passed in and the new couch values will be presented so you don't have to do that pesky conversion.
+  "Do I subtract that number or add it?"
 * **Automatic field & BB positioning** - When an image or directory is loaded, the field CAX and the BB
   are automatically found, along with the vector and scalar distance between them.
 * **Isocenter size determination** - Using backprojections of the EPID images, the 3D gantry isocenter size
   and position can be determined *independent of the BB position*. Additionally, the 2D planar isocenter size
   of the collimator and couch can also be determined.
-* **BB shift instructions** - Direct shift instructions can be printed for iterative BB placement.
-  The current couch position can even be input to get the new couch values.
+* **Image plotting** - WL images can be plotted separately or together, each of which shows the field CAX, BB and
+  scalar distance from BB to CAX.
 * **Axis deviation plots** - Plot the variation of the gantry, collimator, couch, and EPID in each plane
   as well as RMS variation.
 * **File name interpretation** - Rename DICOM filenames to include axis information for linacs that don't include
   such information in the DICOM tags. E.g. "myWL_gantry45_coll0_couch315.dcm".
 """
-from functools import lru_cache
-from itertools import zip_longest
 import io
 import math
 import os.path as osp
-from typing import Union, List, Tuple
+from functools import lru_cache
+from itertools import zip_longest
 from textwrap import wrap
+from typing import List, Tuple, Union
 
+import argue
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy import ndimage, optimize
 
-from .core import image
-from .core.decorators import value_accept
-from .core.geometry import Point, Line, Circle, Vector, cos, sin
-from .core.io import TemporaryZipDirectory, get_url, retrieve_demo_file, is_dicom_image
-from .core.mask import filled_area_ratio, bounding_box
-from .core import pdf
+from .core import image, pdf
+from .core.geometry import Circle, Line, Point, Vector, cos, sin
+from .core.io import (TemporaryZipDirectory, get_url, is_dicom_image,
+                      retrieve_demo_file)
+from .core.mask import bounding_box, filled_area_ratio
 from .core.profile import SingleProfile
 from .core.utilities import is_close, open_path
 
@@ -71,7 +74,7 @@ class ImageManager(list):
                 self.append(img)
         if len(self) < 2:
             raise ValueError("<2 valid WL images were found in the folder/file. Ensure you chose the correct folder/file for analysis")
-        # reorder list based on increasing gantry angle
+        # reorder list based on increasing gantry angle, collimator angle, then couch angle
         self.sort(key=lambda i: (i.gantry_angle, i.collimator_angle, i.couch_angle))
 
 
@@ -226,15 +229,15 @@ class WinstonLutz:
         x_dir = 'LEFT' if sv.x < 0 else 'RIGHT'
         y_dir = 'UP' if sv.y > 0 else 'DOWN'
         z_dir = 'IN' if sv.z < 0 else 'OUT'
-        move = "{} {:2.2f}mm; {} {:2.2f}mm; {} {:2.2f}mm".format(x_dir, abs(sv.x), y_dir, abs(sv.y), z_dir, abs(sv.z))
+        move = f"{x_dir} {abs(sv.x):2.2f}mm; {y_dir} {abs(sv.y):2.2f}mm; {z_dir} {abs(sv.z):2.2f}mm"
         if all(val is not None for val in [couch_vrt, couch_lat, couch_lng]):
             new_lat = round(couch_lat + sv.x/10, 2)
             new_vrt = round(couch_vrt + sv.y/10, 2)
             new_lng = round(couch_lng - sv.z/10, 2)
-            move += "\nNew couch coordinates (mm): VRT: {:3.2f}; LNG: {:3.2f}; LAT: {:3.2f}".format(new_vrt, new_lng, new_lat)
+            move += f"\nNew couch coordinates (mm): VRT: {new_vrt:3.2f}; LNG: {new_lng:3.2f}; LAT: {new_lat:3.2f}"
         return move
 
-    @value_accept(axis=(GANTRY, COLLIMATOR, COUCH, EPID, COMBO), value=('all', 'range'))
+    @argue.options(axis=(GANTRY, COLLIMATOR, COUCH, EPID, COMBO), value=('all', 'range'))
     def axis_rms_deviation(self, axis: str=GANTRY, value: str='all'):
         """The RMS deviations of a given axis/axes.
 
@@ -286,7 +289,7 @@ class WinstonLutz:
         elif metric == 'median':
             return np.median([image.cax2epid_distance for image in self.images])
 
-    @value_accept(item=(GANTRY, EPID, COLLIMATOR, COUCH))
+    @argue.options(item=(GANTRY, EPID, COLLIMATOR, COUCH))
     def _plot_deviation(self, item: str, ax: plt.Axes=None, show: bool=True):
         """Helper function: Plot the sag in Cartesian coordinates.
 
@@ -299,7 +302,7 @@ class WinstonLutz:
         show : bool
             Whether to show the image.
         """
-        title = 'Relative {} displacement'.format(item)
+        title = f'Relative {item} displacement'
         if item == EPID:
             attr = 'epid'
             item = GANTRY
@@ -323,7 +326,7 @@ class WinstonLutz:
         ax.plot(angles, rms, 'g+', label='RMS', ls='-')
         ax.set_title(title)
         ax.set_ylabel('mm')
-        ax.set_xlabel("{} angle".format(item))
+        ax.set_xlabel(f"{item} angle")
         ax.set_xticks(np.arange(0, 361, 45))
         ax.set_xlim([-15, 375])
         ax.grid(True)
@@ -337,7 +340,7 @@ class WinstonLutz:
         images = [image for image in self.images if image.variable_axis in axis]
         return len(images), images
 
-    @value_accept(axis=(GANTRY, COLLIMATOR, COUCH, COMBO))
+    @argue.options(axis=(GANTRY, COLLIMATOR, COUCH, COMBO))
     def plot_axis_images(self, axis: str=GANTRY, show: bool=True, ax: plt.Axes=None):
         """Plot all CAX/BB/EPID positions for the images of a given axis.
 
@@ -373,11 +376,11 @@ class WinstonLutz:
         # set labels
         ax.set_title(axis + ' wobble')
         ax.set_xlabel(axis + ' positions superimposed')
-        ax.set_ylabel(axis + " iso size: {0:3.2f}mm".format(getattr(self, axis.lower() + '_iso_size')))
+        ax.set_ylabel(axis + f" iso size: {getattr(self, axis.lower() + '_iso_size'):3.2f}mm")
         if show:
             plt.show()
 
-    @value_accept(axis=(GANTRY, COLLIMATOR, COUCH, COMBO, ALL))
+    @argue.options(axis=(GANTRY, COLLIMATOR, COUCH, COMBO, ALL))
     def plot_images(self, axis: str=ALL, show: bool=True):
         """Plot a grid of all the images acquired.
 
@@ -421,12 +424,12 @@ class WinstonLutz:
             plot_image(wl_image, mpl_axis)
 
         # set titles
-        fig.suptitle("{} images".format(axis), fontsize=14, y=1)
+        fig.suptitle(f"{axis} images", fontsize=14, y=1)
         plt.tight_layout()
         if show:
             plt.show()
 
-    @value_accept(axis=(GANTRY, COLLIMATOR, COUCH, COMBO, ALL))
+    @argue.options(axis=(GANTRY, COLLIMATOR, COUCH, COMBO, ALL))
     def save_images(self, filename: str, axis: str=ALL, **kwargs):
         """Save the figure of `plot_images()` to file. Keyword arguments are passed to `matplotlib.pyplot.savefig()`.
 
@@ -471,25 +474,17 @@ class WinstonLutz:
         """Return the analysis results summary."""
         result = "\nWinston-Lutz Analysis\n" \
                  "=================================\n" \
-                 "Number of images: {}\n" \
-                 "Maximum 2D CAX->BB distance: {:.2f}mm\n" \
-                 "Median 2D CAX->BB distance: {:.2f}mm\n" \
-                 "Shift BB to iso, facing gantry: {}\n" \
-                 "Gantry 3D isocenter diameter: {:.2f}mm\n" \
-                 "Maximum Gantry RMS deviation (mm): {:.2f}mm\n" \
-                 "Maximum EPID RMS deviation (mm): {:.2f}mm\n" \
-                 "Collimator 2D isocenter diameter: {:.2f}mm\n" \
-                 "Maximum Collimator RMS deviation (mm): {:.2f}\n" \
-                 "Couch 2D isocenter diameter: {:.2f}mm\n" \
-                 "Maximum Couch RMS deviation (mm): {:.2f}".format(
-                    len(self.images), self.cax2bb_distance('max'), self.cax2bb_distance('median'),
-                    self.bb_shift_instructions(), self.gantry_iso_size, max(self.axis_rms_deviation(GANTRY)),
-                    max(self.axis_rms_deviation(EPID)),
-                    self.collimator_iso_size, max(self.axis_rms_deviation(COLLIMATOR)),
-                    self.couch_iso_size,
-                    max(self.axis_rms_deviation(COUCH)),
-                 )
-
+                 f"Number of images: {len(self.images)}\n" \
+                 f"Maximum 2D CAX->BB distance: {self.cax2bb_distance('max'):.2f}mm\n" \
+                 f"Median 2D CAX->BB distance: {self.cax2bb_distance('median'):.2f}mm\n" \
+                 f"Shift BB to iso, facing gantry: {self.bb_shift_instructions()}\n" \
+                 f"Gantry 3D isocenter diameter: {self.gantry_iso_size:.2f}mm\n" \
+                 f"Maximum Gantry RMS deviation (mm): {max(self.axis_rms_deviation(GANTRY)):.2f}mm\n" \
+                 f"Maximum EPID RMS deviation (mm): {max(self.axis_rms_deviation(EPID)):.2f}mm\n" \
+                 f"Collimator 2D isocenter diameter: {self.collimator_iso_size:.2f}mm\n" \
+                 f"Maximum Collimator RMS deviation (mm): {max(self.axis_rms_deviation(COLLIMATOR)):.2f}\n" \
+                 f"Couch 2D isocenter diameter: {self.couch_iso_size:.2f}mm\n" \
+                 f"Maximum Couch RMS deviation (mm): {max(self.axis_rms_deviation(COUCH)):.2f}"
         return result
 
     def publish_pdf(self, filename: str, notes: Union[str, List[str]]=None, open_file: bool=False, metadata: dict=None):
@@ -517,16 +512,16 @@ class WinstonLutz:
         canvas = pdf.PylinacCanvas(filename, page_title=title, metadata=metadata)
         avg_sid = np.mean([image.metadata.RTImageSID for image in self.images])
         text = ['Winston-Lutz results:',
-                'Average SID (mm): {:2.0f}'.format(avg_sid),
-                'Number of images: {}'.format(len(self.images)),
-                'Maximum distance to BB (mm): {:2.2f}'.format(self.cax2bb_distance('max')),
-                'Median distances to BB (mm): {:2.2f}'.format(self.cax2bb_distance('median')),
-                'Gantry 3D isocenter diameter (mm): {:2.2f}'.format(self.gantry_iso_size),
+                f'Average SID (mm): {avg_sid:2.0f}',
+                f'Number of images: {len(self.images)}',
+                f'Maximum distance to BB (mm): {self.cax2bb_distance("max"):2.2f}',
+                f'Median distances to BB (mm): {self.cax2bb_distance("median"):2.2f}',
+                f'Gantry 3D isocenter diameter (mm): {self.gantry_iso_size:2.2f}',
                 ]
         if self._contains_axis_images(COLLIMATOR):
-            text.append('Collimator 2D isocenter diameter (mm): {:2.2f}'.format(self.collimator_iso_size),)
+            text.append(f'Collimator 2D isocenter diameter (mm): {self.collimator_iso_size:2.2f}')
         if self._contains_axis_images(COUCH):
-            text.append('Couch 2D isocenter diameter (mm): {:2.2f}'.format(self.couch_iso_size), )
+            text.append(f'Couch 2D isocenter diameter (mm): {self.couch_iso_size:2.2f}')
         canvas.add_text(text=text, location=(10, 25.5))
         # draw summary image on 1st page
         data = io.BytesIO()
@@ -538,7 +533,7 @@ class WinstonLutz:
         # add more pages showing individual axis images
         for ax in (GANTRY, COLLIMATOR, COUCH, COMBO):
             if self._contains_axis_images(ax):
-                canvas.add_new_page(metadata=metadata)
+                canvas.add_new_page()
                 data = io.BytesIO()
                 self.save_images(data, axis=ax, figsize=(10, 10))
                 canvas.add_image(data, location=(2, 7), dimensions=(18, 18))
@@ -568,14 +563,14 @@ class WLImage(image.LinacDicomImage):
         """
         super().__init__(file, use_filenames=use_filenames)
         self.file = osp.basename(file)
-        self.check_inversion()
+        self.check_inversion_by_histogram(percentiles=(0.01, 50, 99.99))
         self.flipud()
         self._clean_edges()
         self.field_cax, self.bounding_box = self._find_field_centroid()
         self.bb = self._find_bb()
 
     def __repr__(self):
-        return "WLImage(G={0:.1f}, B={1:.1f}, P={2:.1f})".format(self.gantry_angle, self.collimator_angle, self.couch_angle)
+        return f"WLImage(G={self.gantry_angle:.1f}, B={self.collimator_angle:.1f}, P={self.couch_angle:.1f})"
 
     def _clean_edges(self, window_size: int=2):
         """Clean the edges of the image to be near the background level."""
@@ -781,8 +776,8 @@ class WLImage(image.LinacDicomImage):
         ax.set_yticklabels([])
         ax.set_xticklabels([])
         ax.set_title('\n'.join(wrap(self.file, 30)), fontsize=10)
-        ax.set_xlabel("G={0:.0f}, B={1:.0f}, P={2:.0f}".format(self.gantry_angle, self.collimator_angle, self.couch_angle))
-        ax.set_ylabel("CAX to BB: {0:3.2f}mm".format(self.cax2bb_distance))
+        ax.set_xlabel(f"G={self.gantry_angle:.0f}, B={self.collimator_angle:.0f}, P={self.couch_angle:.0f}")
+        ax.set_ylabel(f"CAX to BB: {self.cax2bb_distance:3.2f}mm")
         if show:
             plt.show()
         return ax
