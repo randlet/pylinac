@@ -521,11 +521,8 @@ class StarProfile(CollapsedCircleProfile):
     """Class that holds and analyzes the circular profile which finds the radiation lines."""
     def __init__(self, image, start_point, radius, min_peak_height, min_peak_distance, fwhm):
         radius = self._convert_radius_perc2pix(image, start_point, radius)
-        super().__init__(center=start_point,
-                         radius=radius,
-                         image_array=image.array,
-                         width_ratio=0.1)
         super().__init__(center=start_point, radius=radius, image_array=image.array, width_ratio=0.1, sampling_ratio=3)
+        self.get_peaks(min_peak_height, fwhm=fwhm, min_peak_distance=min_peak_distance)
 
     @staticmethod
     def _convert_radius_perc2pix(image, start_point, radius):
