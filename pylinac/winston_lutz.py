@@ -160,7 +160,7 @@ class WinstonLutz:
         print(wl.results())
         wl.plot_summary()
 
-    @lru_cache()
+    @lru_cache(1)
     def _minimize_axis(self, axis=GANTRY):
         """Return the minimization result of the given axis."""
         def distance(p, things):

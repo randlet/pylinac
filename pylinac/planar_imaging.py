@@ -13,8 +13,8 @@ Features:
   as you see fit.
 """
 import copy
-from functools import lru_cache
 import io
+from functools import lru_cache
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -22,13 +22,13 @@ from pylinac.core.geometry import Circle
 from scipy.interpolate.interpolate import interp1d
 from skimage import feature, measure
 
-from .core.utilities import open_path
-from .core import image
+from .core import image, pdf
 from .core.geometry import Point
 from .core.io import get_url, retrieve_demo_file
 from .core.profile import CollapsedCircleProfile
-from .core.roi import LowContrastDiskROI, HighContrastDiskROI, DiskROI, bbox_center
-from .core import pdf
+from .core.roi import (DiskROI, HighContrastDiskROI, LowContrastDiskROI,
+                       bbox_center)
+from .core.utilities import open_path
 
 
 class ImagePhantomBase:
@@ -500,7 +500,7 @@ class StandardImagingQC3(ImagePhantomBase):
             plt.show()
 
     @property
-    @lru_cache()
+    @lru_cache(1)
     def phantom_ski_region(self):
         """The skimage region of the phantom outline."""
         regions = self._get_canny_regions()
@@ -649,7 +649,7 @@ class LeedsTOR(ImagePhantomBase):
         return Point(x, y)
 
     @property
-    @lru_cache()
+    @lru_cache(1)
     def phantom_angle(self):
         """Determine the angle of the phantom.
 
@@ -803,8 +803,8 @@ class LeedsTOR(ImagePhantomBase):
             backgrounds can cause this analysis to fail. If the contrasts/MTF ROIs appear correctly located but the
             plots are wonky, try setting this to True.
         angle_offset : int, float
-            Some LeedsTOR phantoms have the low contrast regions slightly offset from phantom to phantom. 
-            This parameter lets the user correct for any consistent angle effects of the phantom. The offset 
+            Some LeedsTOR phantoms have the low contrast regions slightly offset from phantom to phantom.
+            This parameter lets the user correct for any consistent angle effects of the phantom. The offset
             is in degrees and moves counter-clockwise. Use this if the low contrast ROI samples are offset from the real
             ROIs.
         """

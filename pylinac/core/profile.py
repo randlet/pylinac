@@ -1,18 +1,18 @@
 """Module of objects that resemble or contain a profile, i.e. a 1 or 2-D f(x) representation."""
 import copy
 from functools import lru_cache
-from typing import Union, Tuple, Sequence, List, Optional
+from typing import List, Optional, Sequence, Tuple, Union
 
+import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Circle as mpl_Circle
-import matplotlib.pyplot as plt
 from scipy import ndimage
 from scipy.interpolate import interp1d
 
-from .utilities import is_float_like, is_int_like
 from .decorators import value_accept
-from .geometry import Point, Circle
+from .geometry import Circle, Point
 from .typing import NumberLike
+from .utilities import is_float_like, is_int_like
 
 LEFT = 'left'
 RIGHT = 'right'
@@ -208,7 +208,7 @@ class SingleProfile(ProfileMixin):
         return grounded_values
 
     @property
-    @lru_cache()
+    @lru_cache(1)
     def _initial_peak_idx(self) -> int:
         """The initial peak index."""
         x_idx = self._get_initial_peak(self._passed_initial_peak)
@@ -248,7 +248,7 @@ class SingleProfile(ProfileMixin):
         return initial_peak
 
     @value_accept(side=(LEFT, RIGHT), kind=(VALUE, INDEX))
-    @lru_cache()
+    @lru_cache(1)
     def _penumbra_point(self, side: str='left', x: int=50, interpolate: bool=False, kind: str='index'):
         """Return the index of the given penumbra. Search starts at the peak and moves index-by-index
         outward until the penumbra value is hit.
@@ -307,7 +307,7 @@ class SingleProfile(ProfileMixin):
             return peak
 
     @property
-    @lru_cache()
+    @lru_cache(1)
     def _values_left_interp(self) -> np.ndarray:
         """Interpolated values of the "left side" profile data."""
         ydata_f = interp1d(self._indices, self._values_left, kind=self.interpolation_type)
@@ -315,7 +315,7 @@ class SingleProfile(ProfileMixin):
         return y_data
 
     @property
-    @lru_cache()
+    @lru_cache(1)
     def _values_right_interp(self) -> np.ndarray:
         """Interpolated values of the "right side" profile data."""
         ydata_f = interp1d(self._indices, self._values_right, kind=self.interpolation_type)
@@ -323,7 +323,7 @@ class SingleProfile(ProfileMixin):
         return y_data
 
     @property
-    @lru_cache()
+    @lru_cache(1)
     def _values_interp(self) -> np.ndarray:
         """Interpolated values of the entire profile array."""
         ydata_f = interp1d(self._indices, self.values, kind=self.interpolation_type)
@@ -835,11 +835,11 @@ class CircleProfile(MultiProfile, Circle):
 
     @staticmethod
     def _ensure_array_size(array: np.ndarray, min_width: int, min_height: int):
-            """Ensure the array size of inputs are greater than the minimums."""
-            height = array.shape[0]
-            width = array.shape[1]
-            if width < min_width or height < min_height:
-                raise ValueError("Array size not large enough to compute profile")
+        """Ensure the array size of inputs are greater than the minimums."""
+        height = array.shape[0]
+        width = array.shape[1]
+        if width < min_width or height < min_height:
+            raise ValueError("Array size not large enough to compute profile")
 
 
 class CollapsedCircleProfile(CircleProfile):

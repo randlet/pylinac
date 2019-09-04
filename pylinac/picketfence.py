@@ -12,25 +12,24 @@ Features:
 * **Account for panel translation** - Have an off-CAX setup? No problem. Translate your EPID and pylinac knows.
 * **Account for panel sag** - If your EPID sags at certain angles, just tell pylinac and the results will be shifted.
 """
+import io
+import os.path as osp
 from collections import Sequence
 from functools import lru_cache
-import os.path as osp
-import io
 from itertools import cycle
 from tempfile import TemporaryDirectory
-from typing import Union, Tuple, List
+from typing import List, Tuple, Union
 
 import argue
 import matplotlib.pyplot as plt
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 import numpy as np
-
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from pylinac.core.typing import NumberLike
 from pylinac.core.utilities import open_path
-from .core import image
-from .core.geometry import Line, Rectangle, Point
+
+from .core import image, pdf
+from .core.geometry import Line, Point, Rectangle
 from .core.io import get_url, retrieve_demo_file
-from .core import pdf
 from .core.profile import MultiProfile, SingleProfile
 from .log_analyzer import load_log
 from .settings import get_dicom_cmap
@@ -190,7 +189,7 @@ class PicketFence:
         return np.argmax(picket.error_array)
 
     @property
-    @lru_cache()
+    @lru_cache(1)
     def abs_median_error(self) -> float:
         """Return the median error found."""
         return np.median(np.hstack([picket.error_array for picket in self.pickets]))
@@ -568,7 +567,7 @@ class Settings:
         return 20 if not self.hdmlc else 28
 
     @property
-    @lru_cache()
+    @lru_cache(1)
     def leaf_centers(self) -> np.ndarray:
         """Return a set of leaf centers perpendicular to the leaf motion based on the position of the CAX."""
         # generate a set of leaf center points based on physical widths of large and small leaves
@@ -724,7 +723,7 @@ class Picket:
         return np.round(np.median(np.diff(self.settings.leaf_centers) * 2 / 5) / 2).astype(int)
 
     @property
-    @lru_cache()
+    @lru_cache(1)
     def picket_array(self) -> np.ndarray:
         """A slice of the whole image that contains the area around the picket."""
         if self.settings.orientation == UP_DOWN:
@@ -758,7 +757,7 @@ class Picket:
         return self.error_array.max()
 
     @property
-    @lru_cache()
+    @lru_cache(1)
     def error_array(self) -> np.ndarray:
         """An array containing the error values of all the measurements."""
         return np.array([meas.error for meas in self.mlc_meas])
@@ -890,7 +889,7 @@ class MLCMeas(Line):
             return self.error < self.settings.action_tolerance
 
     @property
-    @lru_cache()
+    @lru_cache(1)
     def leaf_pair(self) -> Tuple[int, int]:
         """The leaf pair that formed the MLC measurement.
 
