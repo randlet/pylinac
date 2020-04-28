@@ -141,3 +141,22 @@ class FlatSym18X(FlatSymBase, TestCase):
     vert_symmetry = 1.23
     horiz_flatness = 1.79
     horiz_symmetry = 1.16
+
+
+class FlatSym18XElekta(FlatSymBase, TestCase):
+    file_path = ['18x auto bulb2.dcm']
+    flatness_method = 'elekta'
+    symmetry_method = 'elekta'
+    vert_flatness = 103.3
+    vert_symmetry = 101.2
+    horiz_flatness = 103.6
+    horiz_symmetry = 101
+
+
+class TIF1(FlatSymBase, TestCase):
+    """This is to test loading from a TIF file"""
+    file_path = ['F&S.tif']
+    vert_flatness = 1.4
+    vert_symmetry = 0.64
+    horiz_flatness = 2.4
+    horiz_symmetry = 1.6
